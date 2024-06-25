@@ -24,7 +24,6 @@ class Model:
     def load(self, path):
         with open(path, "rb") as f:
             self.weights = pickle.load(f)
-            self.context.nodes = self.weights
 
     def save(self, path):
         with open(path, "wb") as f:

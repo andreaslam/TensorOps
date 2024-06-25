@@ -28,7 +28,7 @@ class Node:
         return Power(self, index)
 
     def __repr__(self):
-        return f"Node(value={self.value:5f}, grad={self.grad:5f})"
+        return f"Node(value={self.value}, grad={self.grad})"
 
     def sin(self):
         return Sin(self)

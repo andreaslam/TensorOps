@@ -27,6 +27,6 @@ class MSELoss(Loss):  # L2 loss
     def __init__(self):
         super().__init__()
 
-    def loss(self, actual, target):  # takes float, not Node
+    def loss(self, actual, target):  # takes Node, not float
         result = (target - actual) ** 2
         return result

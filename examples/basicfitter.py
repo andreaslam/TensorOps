@@ -16,7 +16,8 @@ if __name__ == "__main__":
 
         polynomial_result = w_0 + w_1 * x + w_2 * (x**2)  # predictor function
         loss_fn = MSELoss()
-        loss = loss_fn.loss(polynomial_result.value, target.value)
+        print(type(polynomial_result), type(target))
+        loss = loss_fn.loss(polynomial_result, target)
         loss_plot = LossPlotter()
         optim = SGD([w_0, w_1, w_2], lr=0.1)
 
@@ -24,7 +25,6 @@ if __name__ == "__main__":
             zero_grad(context.nodes)
             forward(context.nodes)
             backward(context.nodes)
-
             print(f"generation {gen}: {loss.value:2f}")
 
             optim.step()
