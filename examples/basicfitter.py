@@ -1,4 +1,5 @@
 # fits a polynomial (ax^2 + bx + c) to a single value and optimised using SGD() and using MSELoss as cost function
+# this example does not use the Model class but uses Node to construct a polynomial
 
 from node import Node, NodeContext, forward, backward, zero_grad
 from loss import MSELoss
