@@ -18,13 +18,15 @@ class L1Loss(Loss):
     def __init__(self):
         super().__init__()
 
-    def loss(self, actual, target):
-        return abs(actual - target)
+    def loss(self, actual, target): # takes float, not Node
+        result =  abs(actual - target)
+        return result
 
 
 class MSELoss(Loss):  # L2 loss
     def __init__(self):
         super().__init__()
 
-    def loss(self, actual, target):
-        return (target - actual) ** 2
+    def loss(self, actual, target): # takes float, not Node
+        result = (target - actual) ** 2
+        return result

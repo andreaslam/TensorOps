@@ -1,38 +1,34 @@
-from node import Node
+import functools
+from node import Node, NodeContext
 import pickle
 
-
 class Model:
-    def __init__(self, weights, *args, **kwargs):
+    def __init__(self, weights=None, *args, **kwargs):
         if weights is None:
-            # TODO:
-            self.weights = self.random_initialise()
-        else:
-            self.weights = weights
+            weights = []
+        self.weights = weights  # should be of type List[Node()]
         self.args = args
         self.kwargs = kwargs
-
-    def random_initialise(self):
-        # TODO impl random initialise
-        return [0, 0, 0]  # dummy output
-
+        
     def forward(self, x):
-        raise NotImplementedError("Subclasses should implement this method.")
-
+        pass
+    
+    # remove x from the execution nodes
+    
     def __repr__(self):
         if self.weights:
-            return f"Model containing weights: {self.weights}"
-        return "[Warning]: No weights initialised yet."
+            return f"Model(weights={self.weights})"
+        return "[Warning]: no weights initialised yet"
 
-    def load(self, path: str):
+    def load(self, path):
         with open(path, "rb") as f:
             self.weights = pickle.load(f)
+            self.context.nodes = self.weights
 
-    def save(self, path: str):
+    def save(self, path):
         with open(path, "wb") as f:
             pickle.dump(self.weights, f)
-
-
+    
 def softmax(x, dim=0):
     numerator = [num.exp() for num in x]
     denominator = sum(numerator)
