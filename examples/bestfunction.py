@@ -1,9 +1,3 @@
-import sys
-import os
-
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, parent_dir)
-
 # creates 3 different polynomials to fit a dataset and finds the "best" function by comparing and plotting their MSE losses
 
 from node import Node, NodeContext, forward, backward, zero_grad
