@@ -2,8 +2,8 @@
 
 from node import Node, NodeContext, forward, backward, zero_grad
 from loss import MSELoss
-from utils import LossPlotter, visualise_graph
-from optim import SGD, Adam
+from utils import LossPlotter
+from optim import SGD
 from model import Model
 import random
 
@@ -61,9 +61,10 @@ class CubicApproximator(Model):  # fits using y = ax^3 + bx^2 + cx + d
 
 if __name__ == "__main__":
     random.seed(42)
+    results = {}
     with NodeContext() as context:
-        X_train = [Node(random.uniform(-5, 125)) for _ in range(0, 5)]
-        y_train = [Node(random.uniform(-5, 125)) for _ in X_train]
+        X_train = [Node(random.uniform(-125, 125)) for _ in range(0, 5)]
+        y_train = [Node(random.uniform(-125, 125)) for _ in X_train]
 
         print([(x.value, y.value) for x, y in zip(X_train, y_train)])
 
@@ -71,10 +72,10 @@ if __name__ == "__main__":
             [Node(random.uniform(-10, 10), requires_grad=True) for _ in range(2)]
         )
         quadratic = QuadraticApproximator(
-            [Node(random.uniform(-10, 10), requires_grad=True) for _ in range(3)]
+            [Node(random.uniform(-5, 5), requires_grad=True) for _ in range(3)]
         )
         cubic = CubicApproximator(
-            [Node(random.uniform(-10, 10), requires_grad=True) for _ in range(4)]
+            [Node(random.uniform(-2, 2), requires_grad=True) for _ in range(4)]
         )
 
         print("linear model containing weights:", linear)
@@ -87,7 +88,8 @@ if __name__ == "__main__":
         loss_plot = LossPlotter()
 
         for approximator in approximators:
-            optim = Adam(approximator.weights, lr=1e-2)
+            optim = SGD(approximator.weights, lr=1e-2)
+            total_loss_per_approx = []
             for epoch in range(10):
                 for X, y in zip(X_train, y_train):
                     zero_grad(approximator.weights)
@@ -95,6 +97,15 @@ if __name__ == "__main__":
                     y_preds = approximator.forward(X)
 
                     loss = loss_fn.loss(y_preds.value, y.value)
-                    print(f"{approximator.name} epoch: {epoch} loss: {loss}")
+                    print(f"{approximator.name} epoch: {epoch} loss: {loss:.3f}")
                     loss_plot.register_datapoint(loss, label=approximator.name)
+                    total_loss_per_approx.append(loss)
+
+                results[approximator.name] = sum(total_loss_per_approx) / len(
+                    total_loss_per_approx
+                )
         loss_plot.plot()
+
+        print(
+            f"Best function: {min(results,key=results.get)} with average loss of {min(results.values()):.3f}"
+        )
