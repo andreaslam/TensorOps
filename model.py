@@ -37,4 +37,4 @@ def softmax(x, dim=0):
 
 
 def sigmoid(x):
-    return Node(1) / (Node(1) + x.exp())
+    return Node(1) / (Node(1) + Node(1)/(x.exp()))

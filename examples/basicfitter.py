@@ -1,3 +1,9 @@
+import sys
+import os
+
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, parent_dir)
+
 # fits a polynomial (ax^2 + bx + c) to a single value and optimised using SGD() and using MSELoss as cost function
 # this example does not use the Model class but uses Node to construct a polynomial
 
