@@ -1,5 +1,6 @@
 import math
 
+
 class Optim:
     def __init__(self, lr=1e-3, maximise=False, weight_decay=0.0):
         self.lr = lr
@@ -101,4 +102,3 @@ class SGD(Optim):
                 param.value = param.value + self.lr * g_t
             else:
                 param.value = param.value - self.lr * g_t
-

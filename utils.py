@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import networkx as nx
 
+
 class LossPlotter:
     def __init__(self):
         self.datapoints = {}
@@ -56,4 +57,3 @@ def visualise_graph(nodes):
         font_size=6,
     )
     plt.show()
-

@@ -1,20 +1,20 @@
 from node import Node
 import pickle
 
+
 class Model:
     def __init__(self, weights, *args, **kwargs):
-
         if weights is None:
             # TODO:
             self.weights = self.random_initialise()
         else:
-            self.weights = weights 
+            self.weights = weights
         self.args = args
         self.kwargs = kwargs
 
     def random_initialise(self):
         # TODO impl random initialise
-        return [0,0,0] # dummy output
+        return [0, 0, 0]  # dummy output
 
     def forward(self, x):
         raise NotImplementedError("Subclasses should implement this method.")

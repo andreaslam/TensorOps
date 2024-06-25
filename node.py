@@ -1,5 +1,6 @@
 import math
 
+
 class Node:
     def __init__(self, value, requires_grad=True, weight=False):
         self.value = value
@@ -58,6 +59,7 @@ class Node:
 
     def seed_grad(self, seed):
         self.grad = seed
+
 
 class NodeContext:
     current_context = None

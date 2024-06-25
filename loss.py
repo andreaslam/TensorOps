@@ -1,4 +1,3 @@
-
 class Loss:
     def __init__(self):
         pass
@@ -29,4 +28,3 @@ class MSELoss(Loss):  # L2 loss
 
     def loss(self, actual, target):
         return (target - actual) ** 2
-
