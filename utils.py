@@ -30,8 +30,7 @@ class LossPlotter:
         plt.close()
 
 
-
-def visualize_graph(nodes):
+def visualise_graph(nodes):
     G = nx.DiGraph()
     labels = {}
     for node in nodes:
