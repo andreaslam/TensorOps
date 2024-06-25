@@ -1,4 +1,4 @@
-# TensorOps - A Work-In-Progress Autograd library
+# TensorOps - A Work-In-Progress Autograd Library
 
 ## Setting up TensorOps
 
