@@ -29,6 +29,7 @@ class LinearApproximator(Model):  # # fits using y = m * x + c
             forward(cxt.nodes)
             return x
 
+
 class QuadraticApproximator(Model):  # fits using y = ax^2 + bx + c
     def __init__(self, weights):
         super().__init__(weights)
@@ -41,7 +42,7 @@ class QuadraticApproximator(Model):  # fits using y = ax^2 + bx + c
         with NodeContext() as cxt:
             cxt.nodes += self.weights
             cxt.nodes.append(x)
-            x = self.a * (x ** 2) + self.b * x + self.c
+            x = self.a * (x**2) + self.b * x + self.c
             forward(cxt.nodes)
             return x
 
@@ -70,7 +71,7 @@ if __name__ == "__main__":
         X_train = [Node(random.uniform(-5, 125)) for _ in range(0, 5)]
         y_train = [Node(random.uniform(-5, 125)) for _ in X_train]
 
-        print([(x.value,y.value) for x, y in zip(X_train, y_train)])
+        print([(x.value, y.value) for x, y in zip(X_train, y_train)])
 
         linear = LinearApproximator(
             [Node(random.uniform(-10, 10), requires_grad=True) for _ in range(2)]
@@ -98,7 +99,7 @@ if __name__ == "__main__":
                     zero_grad(approximator.weights)
                     backward(approximator.weights)
                     y_preds = approximator.forward(X)
-                    
+
                     loss = loss_fn.loss(y_preds.value, y.value)
                     print(f"{approximator.name} epoch: {epoch} loss: {loss}")
                     loss_plot.register_datapoint(loss, label=approximator.name)
