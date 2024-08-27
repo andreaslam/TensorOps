@@ -3,3 +3,4 @@ matplotlib-inline==0.1.6
 networkx==3.0rc1
 scikit-learn==1.2.2
 torch==2.4.0
+tqdm==4.66.5
