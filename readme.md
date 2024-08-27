@@ -19,7 +19,7 @@ git clone https://github.com/andreaslam/TensorOps
 Then, in a terminal, enter:
 
 ```
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ## Getting started with TensorOps
