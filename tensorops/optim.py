@@ -79,11 +79,10 @@ class SGD(Optim):
     def step(self):
         self.t += 1
         for param in filter(lambda p: p.requires_grad, self.parameters):
-            param.value -= self.lr * param.grad
 
             g_t = param.grad
             if self.weight_decay != 0.0:
-                g_t = g_t + self.weight_decay * param.value
+                g_t += self.weight_decay * param.value
 
             if self.momentum != 0:
                 if self.t > 1:
@@ -94,11 +93,11 @@ class SGD(Optim):
                     self.b_t[param] = g_t
 
                 if self.nesterov:
-                    g_t = g_t + self.momentum * self.b_t[param]
+                    g_t += self.momentum * self.b_t[param]
                 else:
                     g_t = self.b_t[param]
 
             if self.maximise:
-                param.value = param.value + self.lr * g_t
+                param.value += self.lr * g_t
             else:
-                param.value = param.value - self.lr * g_t
+                param.value -= self.lr * g_t

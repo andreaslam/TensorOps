@@ -1,4 +1,12 @@
-# TensorOps - A Work-In-Progress Autograd Library
+<div align="center">
+
+# TensorOps
+#### A Work-In-Progress Autograd Library
+
+<img src="https://img.shields.io/badge/Powered%20by-Python-306998" alt="Powered by Python">
+<img src="https://badgen.net/github/commits/andreaslam/TensorOps/main" alt="Total commits">
+
+</div>
 
 ## Setting up TensorOps
 

@@ -1,122 +1,104 @@
-import sys
-import os
-parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, parent_dir)
-
-from node import Node, NodeContext, forward, backward, zero_grad
-from loss import L1Loss
-from utils import LossPlotter, visualise_graph
-from optim import Adam
-from model import Model, sigmoid
-import random
-
-class LinearApproximator(Model):  # fits using y = m * x + c
-    def __init__(self, weights):
-        super().__init__(weights)
-        self.name = "linear-approx"
-        self.m = weights[0]
-        self.c = weights[1]
-
-    def forward(self, x):
-        return sigmoid(self.m * x + self.c)
+from tensorops.tensorutils import LossPlotter
+from tensorops.loss import MSELoss
+from tensorops.model import Model
+from tensorops.node import Node, backward, forward
+from tensorops.optim import SGD, Adam
 
 
-class QuadraticApproximator(Model):  # fits using y = ax^2 + bx + c
-    def __init__(self, weights):
-        super().__init__(weights)
-        self.name = "quad-approx"
-        self.a = weights[0]
-        self.b = weights[1]
-        self.c = weights[2]
+class LinearModel(Model):
+    def __init__(self, loss_criterion):
+        super().__init__(loss_criterion)
+        with self.context:
+            self.m = Node(0.7, requires_grad=True, weight=True)
+            self.c = Node(-0.3, requires_grad=True, weight=True)
+            self.output_node = self.m * self.inputs + self.c
+            self.loss = loss_criterion.loss(self.targets, self.output_node)
 
-    def forward(self, x):
-        return sigmoid(self.a * (x**2) + self.b * x + self.c)
+    def forward(self, input_node):
+        with self.context:
+            self.inputs.set_value(input_node.value)
+            forward(self.context.nodes)
+            return self.output_node
+
+    def calculate_loss(self, output, target):
+        with self.context:
+            self.output_node.set_value(output.value)
+            self.targets.set_value(target.value)
+            return self.loss
 
 
-class CubicApproximator(Model):  # fits using y = ax^3 + bx^2 + cx + d
-    def __init__(self, weights):
-        super().__init__(weights)
-        self.name = "cubic-approx"
-        self.a = weights[0]
-        self.b = weights[1]
-        self.c = weights[2]
-        self.d = weights[3]
+class QuadraticModel(Model):
+    def __init__(self, loss_criterion):
+        super().__init__(loss_criterion)
+        with self.context:
+            self.a = Node(0.7, requires_grad=True, weight=True)
+            self.b = Node(-0.3, requires_grad=True, weight=True)
+            self.c = Node(0.3, requires_grad=True, weight=True)
+            self.output_node = (
+                self.a * (self.inputs**2) + self.b * self.inputs + self.c
+            )
+            self.loss = loss_criterion.loss(self.targets, self.output_node)
 
-    def forward(self, x):
-        return sigmoid(self.a * (x**3) + self.b * (x**2) + self.c * x + self.d)
+    def forward(self, input_node):
+        with self.context:
+            self.inputs.set_value(input_node.value)
+            forward(self.context.nodes)
+            return self.output_node
+
+    def calculate_loss(self, output, target):
+        with self.context:
+            self.output_node.set_value(output.value)
+            self.targets.set_value(target.value)
+            return self.loss
+
+
+class CubicModel(Model):
+    def __init__(self, loss_criterion):
+        super().__init__(loss_criterion)
+        with self.context:
+            self.a = Node(0.7, requires_grad=True, weight=True)
+            self.b = Node(-0.3, requires_grad=True, weight=True)
+            self.c = Node(0.3, requires_grad=True, weight=True)
+            self.d = Node(-0.7, requires_grad=True, weight=True)
+            self.output_node = (
+                self.a * (self.inputs**3)
+                + self.b * (self.inputs**2)
+                + self.c * self.inputs
+                + self.d
+            )
+            self.loss = loss_criterion.loss(self.targets, self.output_node)
+
+    def forward(self, input_node):
+        with self.context:
+            self.inputs.set_value(input_node.value)
+            forward(self.context.nodes)
+            return self.output_node
+
+    def calculate_loss(self, output, target):
+        with self.context:
+            self.output_node.set_value(output.value)
+            self.targets.set_value(target.value)
+            return self.loss
+
+
+def train_model(model, optim, num_iterations, loss_plot):
+    for i in range(num_iterations):
+        model.zero_grad()
+        output = model(Node(2.0, requires_grad=False))
+        backward(model.context.nodes)
+        loss = model.calculate_loss(output, Node(1.0, requires_grad=False))
+        optim.step()
+        print(f"generation {i}: loss: {loss.value}")
+        loss_plot.register_datapoint(loss.value, f"{type(model).__name__}-TensorOps")
+
+    loss_plot.plot()
+    print(model)
 
 
 if __name__ == "__main__":
-    random.seed(42)
-    results = {}
-    with NodeContext() as context:
-        X_train = [Node(random.uniform(-1,1), requires_grad=False, weight=False) for _ in range(10)]
-        y_train = [
-            Node(
-                random.uniform(0, 1),
-                requires_grad=False,
-                weight=False,
-            )
-            for _ in X_train
-        ]
-
-        linear = LinearApproximator(
-            [
-                Node(random.uniform(-1, 1), requires_grad=True, weight=True)
-                for _ in range(2)
-            ]
-        )
-        quadratic = QuadraticApproximator(
-            [
-                Node(random.uniform(-1, 1), requires_grad=True, weight=True)
-                for _ in range(3)
-            ]
-        )
-        cubic = CubicApproximator(
-            [
-                Node(random.uniform(-1, 1), requires_grad=True, weight=True)
-                for _ in range(4)
-            ]
-        )
-        # Perform forward pass
-        
-        print([(x.value, y.value) for x, y in zip(X_train, y_train)])
-        print("linear model containing weights:", linear)
-        print("quadratic model containing weights:", quadratic)
-        print("cubic model containing weights:", cubic)
-
-        approximators = [linear, quadratic, cubic]
-
-        loss_fn = L1Loss()
-        loss_plot = LossPlotter()
-        for approximator in approximators:
-            optim = Adam(approximator.weights, lr=1e-5)
-            total_loss_per_approx = []
-            for epoch in range(10):
-                for X, y in zip(X_train, y_train):
-                    zero_grad(context.nodes)
-                    y_preds = approximator.forward(X)
-                    forward(context.nodes)
-                    print("y_preds", y_preds)
-                    print("y", y)
-                    loss = loss_fn.loss(y_preds.value, y.value)
-                    print(loss)
-                    backward(context.nodes)
-                    optim.step()
-                    total_loss_per_approx.append(loss)
-                    loss_plot.register_datapoint(loss, label=approximator.name)
-                results[approximator.name] = sum(total_loss_per_approx) / len(
-                    total_loss_per_approx
-                )
-        loss_plot.plot()
-        
-        print("linear model containing weights:", linear)
-        print("quadratic model containing weights:", quadratic)
-        print("cubic model containing weights:", cubic)
-        
-        print("Loss statistics (average):")
-        for approx in approximators:
-            print(f"{approx.name}: {results[approx.name]:.6f}")
-        print(
-            f"Best function: {min(results, key=results.get)} with average loss of {min(results.values()):.6f}"
-        )
+    criterion = MSELoss()
+    models = [LinearModel(criterion), QuadraticModel(criterion), CubicModel(criterion)]
+    loss_plot = LossPlotter()
+    for model in models:
+        optim = Adam(model.get_weights(), lr=5e-3)
+        train_model(model, optim, 100, loss_plot)

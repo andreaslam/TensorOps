@@ -1,0 +1,12 @@
+pyproject.toml
+TensorOps.egg-info/PKG-INFO
+TensorOps.egg-info/SOURCES.txt
+TensorOps.egg-info/dependency_links.txt
+TensorOps.egg-info/requires.txt
+TensorOps.egg-info/top_level.txt
+tensorops/loss.py
+tensorops/main.py
+tensorops/model.py
+tensorops/node.py
+tensorops/optim.py
+tensorops/tensorutils.py

@@ -36,7 +36,10 @@ def visualise_graph(nodes):
     labels = {}
     for node in nodes:
         node_id = id(node)
-        node_label = f"{type(node).__name__}\nVal: {round(node.value,2)}\nGrad: {round(node.grad,2)}"
+        if node.value and node.grad:
+            node_label = f"{type(node).__name__}\nVal: {round(node.value, 2)}\nGrad: {round(node.grad, 2)}"
+        else:
+            node_label = f"{type(node).__name__}\nVal: {node.value}\nGrad: {node.grad}"
         labels[node_id] = node_label
         G.add_node(node_id)
         for parent in node.parents:
@@ -44,9 +47,12 @@ def visualise_graph(nodes):
             G.add_edge(parent_id, node_id)
 
     pos = nx.planar_layout(G)
-    colourmap = [
-        "#00B4D9" if node.requires_grad else "#C1E1C1" for (_, node) in zip(G, nodes)
-    ]
+    colourmap =[
+        "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
+        for (_, node) in zip(G, nodes)
+    ] 
+    # pastel pink if the node is a neural network weight, pastel blue and green if the node requires grad and if it does not respectively.
+    
     nx.draw(
         G,
         pos,
