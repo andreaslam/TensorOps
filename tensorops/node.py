@@ -68,12 +68,11 @@ class Node(ABC):
     def exp(self):
         return Exp(self)
 
-    @abstractmethod
     def compute(self):
-        ...
-    @abstractmethod
+        pass
+    
     def get_grad(self):
-        ...
+        pass
 
     def zero_grad(self):
         self.grad = 0
