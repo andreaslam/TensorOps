@@ -5,7 +5,7 @@ class Loss(ABC):
     """
     `tensorops.Loss` is the abstract base class that handles cost function computation.
     """
-    
+
     def __init__(self):
         ...
 
@@ -17,7 +17,7 @@ class Loss(ABC):
         return self.loss(actual, target)
 
 
-class L1Loss(Loss): 
+class L1Loss(Loss):
     def __init__(self):
         super().__init__()
 

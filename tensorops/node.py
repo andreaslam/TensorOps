@@ -1,8 +1,7 @@
 import math
-from abc import ABC, abstractmethod
 
 
-class Node(ABC):
+class Node:
 
     """
     `tensorops.Node` is a node in a computational graph, containing its value and gradient.
@@ -70,7 +69,7 @@ class Node(ABC):
 
     def compute(self):
         pass
-    
+
     def get_grad(self):
         pass
 

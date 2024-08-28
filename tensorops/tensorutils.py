@@ -1,10 +1,11 @@
 import matplotlib.pyplot as plt
 import networkx as nx
 
-plt.style.use('seaborn')
+plt.style.use("seaborn")
+
 
 class PlotterUtil:
-    
+
     """
     `tensorops.PlotterUtil` is a utility class for plotting graphical data.
 
@@ -16,7 +17,7 @@ class PlotterUtil:
     plot_styles ({dict[string, string]}): The type of plot for each type of category of data
     colours (list[string]): List of colours for each category of data.
     """
-    
+
     def __init__(self):
         self.datapoints = {}
         self.labels = []
@@ -24,11 +25,12 @@ class PlotterUtil:
         self.plot_styles = {}
         self.colours = {}
 
-    def register_datapoint(self, datapoint, label, x=None, plot_style="line", colour=None):
-        
+    def register_datapoint(
+        self, datapoint, label, x=None, plot_style="line", colour=None
+    ):
         """
         Registers a set of coordinates to be stored inside a `tensorops.PlotterUtil` instance.
-        
+
         Args:
             datapoint (Union[int, float]): the y coordinate of the new data entry to be plotted
             label (string): the legend for the graph
@@ -36,7 +38,7 @@ class PlotterUtil:
             plot_style="line" (string): the type of plot the new data is presented in.
             colour=None (Optional[string]): the colour of the new data point. By default there is no colour option listed, allowing `matplotlib` to pick a default.
         """
-        
+
         if label not in self.labels:
             self.labels.append(label)
             self.datapoints[label] = []
@@ -59,9 +61,13 @@ class PlotterUtil:
             colour = self.colours.get(label)
 
             if self.plot_styles[label] == "line":
-                plt.plot(self.xs[label], self.datapoints[label], label=label, color=colour)
+                plt.plot(
+                    self.xs[label], self.datapoints[label], label=label, color=colour
+                )
             elif self.plot_styles[label] == "scatter":
-                plt.scatter(self.xs[label], self.datapoints[label], label=label, color=colour)
+                plt.scatter(
+                    self.xs[label], self.datapoints[label], label=label, color=colour
+                )
 
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
@@ -73,7 +79,7 @@ class PlotterUtil:
 def visualise_graph(nodes):
     """
     Utility function that visualises the relationship between nodes as a computational graph.
-    
+
     The colour scheme is as follows:
     - Salmon colour if the node is a neural network weight. (`Node.weight=True`)
     - Pastel blue if the node requires gradient. (`Node.requires_grad = True`)
