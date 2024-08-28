@@ -1,18 +1,19 @@
 import matplotlib.pyplot as plt
 import networkx as nx
 
-
 class LossPlotter:
     def __init__(self):
         self.datapoints = {}
         self.labels = []
         self.xs = {}
+        self.plot_styles = {}
 
-    def register_datapoint(self, datapoint, label, x=None):
+    def register_datapoint(self, datapoint, label, x=None, plot_style="line"):
         if label not in self.labels:
             self.labels.append(label)
             self.datapoints[label] = []
             self.xs[label] = []
+            self.plot_styles[label] = plot_style  # Store the plot style for this label
 
         self.datapoints[label].append(datapoint)
 
@@ -23,7 +24,10 @@ class LossPlotter:
 
     def plot(self):
         for label in self.labels:
-            plt.plot(self.xs[label], self.datapoints[label], label=label)
+            if self.plot_styles[label] == "line":
+                plt.plot(self.xs[label], self.datapoints[label], label=label)
+            elif self.plot_styles[label] == "scatter":
+                plt.scatter(self.xs[label], self.datapoints[label], label=label)
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
         plt.legend()
