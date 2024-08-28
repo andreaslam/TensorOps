@@ -26,4 +26,4 @@ pip install -e .
 
 There are some examples available in the [examples folder](https://github.com/andreaslam/TensorOps/tree/main/examples)
 
-For each example implemented in the examples folder, there is a corresponding [PyTorch](https://github.com/pytorch/pytorch) implementation for comparison and juxtaposition.
+Most examples implemented in the examples folder, will have a corresponding [PyTorch](https://github.com/pytorch/pytorch) implementation for comparison and juxtaposition.

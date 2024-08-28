@@ -1,6 +1,4 @@
 from abc import abstractmethod
-from typing import Any
-
 
 class Loss:
     def __init__(self):

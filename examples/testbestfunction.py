@@ -1,5 +1,5 @@
 # Given three polynomial fitters constructed using the torch.nn.Module base class and fits to the point (2,1).
-# The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss. 
+# The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
 # This code is to be used as comparison with bestfunction.py
 
 import torch
@@ -84,6 +84,6 @@ if __name__ == "__main__":
         train_model(model, criterion, optimiser, 100, loss_plot, results)
     print("Training results:", results)
     print(
-        f"Best model was {max(results, key=results.get)} with loss {results[max(results, key=results.get)]}"
+        f"Best model was {min(results, key=results.get)} with loss {results[min(results, key=results.get)]}"
     )
     loss_plot.plot()

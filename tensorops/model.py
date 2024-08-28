@@ -97,7 +97,7 @@ class Model(ABC):
         return self.forward(input_node)
 
     def __repr__(self):
-        if self.context.nodes:
+        if [node for node in self.context.nodes if node.weight]:
             return f"{type(self).__name__}(weights={[node for node in self.context.nodes if node.weight]})"
         return "[Warning]: no weights initialised yet"
 

@@ -47,12 +47,12 @@ def visualise_graph(nodes):
             G.add_edge(parent_id, node_id)
 
     pos = nx.planar_layout(G)
-    colourmap =[
+    colourmap = [
         "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
         for (_, node) in zip(G, nodes)
-    ] 
-    # pastel pink if the node is a neural network weight, pastel blue and green if the node requires grad and if it does not respectively.
-    
+    ]
+    # salmon colour if the node is a neural network weight, pastel blue and green if the node requires grad and if it does not respectively.
+
     nx.draw(
         G,
         pos,

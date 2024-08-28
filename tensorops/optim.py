@@ -79,7 +79,6 @@ class SGD(Optim):
     def step(self):
         self.t += 1
         for param in filter(lambda p: p.requires_grad, self.parameters):
-
             g_t = param.grad
             if self.weight_decay != 0.0:
                 g_t += self.weight_decay * param.value

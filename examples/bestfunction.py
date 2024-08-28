@@ -1,5 +1,5 @@
 # Given three polynomial fitters constructed using the tensorops.Model base class and fits to the point (2,1).
-# The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss. 
+# The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
 
 from tensorops.tensorutils import LossPlotter
 from tensorops.loss import MSELoss
@@ -109,6 +109,6 @@ if __name__ == "__main__":
         train_model(model, optim, 100, loss_plot, results)
     print("Training results:", results)
     print(
-        f"Best model was {max(results, key=results.get)} with loss {results[max(results, key=results.get)]}"
+        f"Best model was {min(results, key=results.get)} with loss {results[min(results, key=results.get)]}"
     )
     loss_plot.plot()

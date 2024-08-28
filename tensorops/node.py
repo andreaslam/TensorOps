@@ -116,6 +116,7 @@ class NodeContext:
         """
 
         self.nodes.append(node)
+
     def recompute(self):
         forward(self.nodes)
 
