@@ -10,8 +10,8 @@ class Node(ABC):
     Attributes
     ----------
     value (float): The value of the node to be created.
-    parents (List[tensorops.Nodes]): A list of containing parent nodes.
-    children (List[tensorops.Nodes]): A list of containing children nodes.
+    parents (list[tensorops.Nodes]): A list of containing parent nodes.
+    children (list[tensorops.Nodes]): A list of containing children nodes.
     requires_grad (bool): Whether the node requires gradient tracking.
     weight (bool): Whether the node is a neural network weight.
     current_context (Optional[tensorops.NodeContext]): Manages the operational context for nodes during computation.

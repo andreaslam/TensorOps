@@ -28,5 +28,5 @@ if __name__ == "__main__":
             print(f"generation {gen}: {loss.value:2f}")
 
             optim.step()
-            loss_plot.register_datapoint(loss.value, "ax^2+bx+c using TensorOps")
+            loss_plot.register_datapoint(loss.value, "ax^2+bx+c (TensorOps)")
         loss_plot.plot()

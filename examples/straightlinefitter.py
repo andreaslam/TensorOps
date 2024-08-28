@@ -40,8 +40,10 @@ def train_model(model, optim, num_iterations, loss_plot):
     ):
         model.zero_grad()
         output = model(Node(random.randint(-5, 5), requires_grad=False, weight=False))
+        loss = model.calculate_loss(
+            output, Node(1.0, requires_grad=False, weight=False)
+        )
         backward(model.context.nodes)
-        loss = model.calculate_loss(output, Node(1.0, requires_grad=False, weight=False))
         optim.step()
         loss_plot.register_datapoint(loss.value, f"{type(model).__name__}-TensorOps")
     loss_plot.plot()

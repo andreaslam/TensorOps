@@ -91,8 +91,8 @@ def train_model(model, optim, num_iterations, loss_plot, results):
     ):
         model.zero_grad()
         output = model(Node(2.0, requires_grad=False))
-        backward(model.context.nodes)
         loss = model.calculate_loss(output, Node(1.0, requires_grad=False))
+        backward(model.context.nodes)
         optim.step()
         loss_plot.register_datapoint(loss.value, f"{type(model).__name__}-TensorOps")
     results[f"{type(model).__name__}-TensorOps"] = loss.value

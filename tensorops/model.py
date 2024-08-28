@@ -82,15 +82,33 @@ class Model(ABC):
             return Node(value, requires_grad, weight)
 
     def backward(self):
+        """
+        Performs the backward pass for the current model. Wrapper function for tensorops.backward()
+        """
         backward(self.context.nodes)
 
     def zero_grad(self):
+        """
+        Sets gradients to all nodes within the model to 0. Wrapper function for tensorops.zero_grad()
+        """
         zero_grad(self.context.nodes)
 
     def get_weights(self):
+        """
+        Returns the nodes that are weights within the tensorops.Model instance. Wrapper function for tensorops.NodeContext.weights_enabled()
+
+        Returns:
+            list[tensorops.Node]: A list of nodes that have Node.weights set to True within nodes present in the tensorops.Model instance
+        """
         return self.context.weights_enabled()
 
     def get_gradients(self):
+        """
+        Returns the nodes that have gradient tracking enabled within the tensorops.Model instance. Wrapper function for tensorops.NodeContext.get_gradients()
+
+        Returns:
+            list[tensorops.Node]: A list of nodes that have Node.requires_grad set to True within nodes present in the tensorops.Model instance
+        """
         return self.context.grad_enabled()
 
     def __call__(self, input_node):

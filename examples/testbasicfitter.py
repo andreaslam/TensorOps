@@ -28,5 +28,5 @@ if __name__ == "__main__":
         print(f"generation {gen}: {loss.item():2f}")
 
         optimizer.step()
-        loss_plot.register_datapoint(loss.item(), "ax^2+bx+c using PyTorch")
+        loss_plot.register_datapoint(loss.item(), "ax^2+bx+c (PyTorch)")
     loss_plot.plot()
