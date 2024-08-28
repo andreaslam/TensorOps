@@ -3,7 +3,7 @@
 
 import torch
 import torch.optim as optim
-from tensorops.tensorutils import LossPlotter
+from tensorops.tensorutils import PlotterUtil
 
 if __name__ == "__main__":
     target = torch.tensor(10.0, dtype=torch.float64, requires_grad=False)
@@ -16,7 +16,7 @@ if __name__ == "__main__":
         return w0 + w1 * x + w2 * (x**2)
 
     mse_loss = torch.nn.MSELoss()
-    loss_plot = LossPlotter()
+    loss_plot = PlotterUtil()
     optimizer = optim.SGD([w_0, w_1, w_2], lr=0.1)
 
     for gen in range(10):

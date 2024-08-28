@@ -13,7 +13,7 @@ class Loss:
         return self.loss(actual, target)
 
 
-class L1Loss(Loss): # MAE loss
+class L1Loss(Loss): 
     def __init__(self):
         super().__init__()
 
@@ -22,7 +22,7 @@ class L1Loss(Loss): # MAE loss
         return result
 
 
-class MSELoss(Loss):  # L2 loss
+class MSELoss(Loss):
     def __init__(self):
         super().__init__()
 

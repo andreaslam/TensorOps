@@ -1,12 +1,13 @@
 # Given a model y = mx + c, constructed using the torch.nn.Module base class and fits to the equation y = 1
 # The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
+# This code is to be used as comparison with straightlinefitter.py
 
 
 import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tensorops.tensorutils import LossPlotter
+from tensorops.tensorutils import PlotterUtil
 from tqdm import tqdm
 
 
@@ -42,5 +43,5 @@ def train_model(model, optimizer, num_iterations, loss_plot):
 if __name__ == "__main__":
     model = LinearModel()
     optimizer = optim.Adam(model.parameters(), lr=5e-2)
-    loss_plot = LossPlotter()
+    loss_plot = PlotterUtil()
     train_model(model, optimizer, 100, loss_plot)

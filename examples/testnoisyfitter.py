@@ -1,12 +1,13 @@
 # Given an equation of a line (y = mx + c) and random inputs from (-5,5) the linear neural network, built and trained using TensorOps, will try and fit to the training data.
 # There is random noise added to the resulting y value of the equation. This is to test the model's ability to adjust its weights for a line of best fit.
+# This code is to be used as comparison with noisyfitter.py
 
 import random
 from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tensorops.tensorutils import LossPlotter
+from tensorops.tensorutils import PlotterUtil
 
 
 class LinearModel(nn.Module):
@@ -30,15 +31,13 @@ if __name__ == "__main__":
         [x * target_m + target_c + random.uniform(-1, 1) for x in X_train]
     )
 
-    print(list(zip(X_train.numpy(), y_train.numpy())))
-
     linear_model = LinearModel()
     criterion = nn.MSELoss()
     optimizer = optim.SGD(linear_model.parameters(), lr=1e-2)
 
-    loss_plot = LossPlotter()
+    loss_plot = PlotterUtil()
 
-    graph_plot = LossPlotter()
+    graph_plot = PlotterUtil()
 
     for x, y in zip(X_train, y_train):
         graph_plot.register_datapoint(
@@ -46,7 +45,7 @@ if __name__ == "__main__":
             label="Training Data (PyTorch)",
             x=x.item(),
             plot_style="scatter",
-            colour="red"
+            colour="red",
         )
 
     for _ in tqdm(range(100), desc=f"Training {type(linear_model).__name__}-PyTorch"):
@@ -55,7 +54,6 @@ if __name__ == "__main__":
             output = linear_model(X)
             loss = criterion(output, y)
             loss.backward()
-            print(loss)
             optimizer.step()
             loss_plot.register_datapoint(
                 loss.item(), f"{type(linear_model).__name__}-PyTorch"

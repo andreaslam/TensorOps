@@ -1,8 +1,9 @@
 import matplotlib.pyplot as plt
 import networkx as nx
+from networkx.drawing.nx_agraph import graphviz_layout
 
 
-class LossPlotter:
+class PlotterUtil:
     def __init__(self):
         self.datapoints = {}
         self.labels = []
@@ -56,7 +57,7 @@ def visualise_graph(nodes):
             parent_id = id(parent)
             G.add_edge(parent_id, node_id)
 
-    pos = nx.planar_layout(G)
+    pos = graphviz_layout(G)
     colourmap = [
         "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
         for (_, node) in zip(G, nodes)

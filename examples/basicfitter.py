@@ -3,7 +3,7 @@
 
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 from tensorops.loss import MSELoss
-from tensorops.tensorutils import LossPlotter
+from tensorops.tensorutils import PlotterUtil
 from tensorops.optim import SGD
 
 if __name__ == "__main__":
@@ -17,7 +17,7 @@ if __name__ == "__main__":
         polynomial_result = w_0 + w_1 * x + w_2 * (x**2)  # predictor function
         loss_fn = MSELoss()
         loss = loss_fn.loss(polynomial_result, target)
-        loss_plot = LossPlotter()
+        loss_plot = PlotterUtil()
         optim = SGD([w_0, w_1, w_2], lr=0.1)
 
         for gen in range(10):

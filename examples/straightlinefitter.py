@@ -3,7 +3,7 @@
 
 
 import random
-from tensorops.tensorutils import LossPlotter
+from tensorops.tensorutils import PlotterUtil
 from tensorops.loss import MSELoss
 from tensorops.model import Model
 from tensorops.node import Node, backward, forward
@@ -53,6 +53,6 @@ def train_model(model, optim, num_iterations, loss_plot):
 if __name__ == "__main__":
     criterion = MSELoss()
     model = LinearModel(criterion)
-    loss_plot = LossPlotter()
+    loss_plot = PlotterUtil()
     optim = Adam(model.get_weights(), lr=5e-2)
     train_model(model, optim, 100, loss_plot)

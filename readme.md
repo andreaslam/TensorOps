@@ -27,3 +27,29 @@ pip install -e .
 There are some examples available in the [examples folder](https://github.com/andreaslam/TensorOps/tree/main/examples)
 
 Most examples implemented in the examples folder, will have a corresponding [PyTorch](https://github.com/pytorch/pytorch) implementation for comparison and juxtaposition.
+
+## TensorOps Features
+
+### Node
+- Forward pass
+- Backward pass
+- Node weight and gradient tracking (enable/disable)
+- Arithmetic operations (BIDMAS, negation, exponentiation)
+- Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid)
+
+### Model
+- Customisable neural networks
+- Customisable methods
+
+## Loss functions
+- Mean Absolute Error
+- Mean Square Error
+
+### Optimisers
+- Adam
+- AdamW
+- Stochastic Gradient Descent (SGD)
+
+### Utility features
+- Function graphing and plotting
+- Colour-coded plotter for Directed Acyclic Graphs (DAGs)
