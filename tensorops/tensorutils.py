@@ -1,8 +1,22 @@
 import matplotlib.pyplot as plt
 import networkx as nx
 
+plt.style.use('seaborn')
 
 class PlotterUtil:
+    
+    """
+    `tensorops.PlotterUtil` is a utility class for plotting graphical data.
+
+    Attributes
+    ----------
+    datapoints (dict[string, Union[int, float]]): Contains all data within a single category of the plot.
+    labels (list[string]): A list containing labels of each category of data being plotted.
+    xs (dict[string, Union[int, float]]): Contains the x-axis data for each category of data.
+    plot_styles ({dict[string, string]}): The type of plot for each type of category of data
+    colours (list[string]): List of colours for each category of data.
+    """
+    
     def __init__(self):
         self.datapoints = {}
         self.labels = []
@@ -11,6 +25,18 @@ class PlotterUtil:
         self.colours = {}
 
     def register_datapoint(self, datapoint, label, x=None, plot_style="line", colour=None):
+        
+        """
+        Registers a set of coordinates to be stored inside a `tensorops.PlotterUtil` instance.
+        
+        Args:
+            datapoint (Union[int, float]): the y coordinate of the new data entry to be plotted
+            label (string): the legend for the graph
+            x=None (Optional[Union[int, float]]): the x coordinate of the new data entry. By default the x-axis would be determined by the index of the entry, incrementing by one.
+            plot_style="line" (string): the type of plot the new data is presented in.
+            colour=None (Optional[string]): the colour of the new data point. By default there is no colour option listed, allowing `matplotlib` to pick a default.
+        """
+        
         if label not in self.labels:
             self.labels.append(label)
             self.datapoints[label] = []
@@ -26,6 +52,9 @@ class PlotterUtil:
             self.xs[label].append(len(self.datapoints[label]) - 1)
 
     def plot(self):
+        """
+        Utility function that plots the stored data within the tensorops.PlotterUtil class.
+        """
         for label in self.labels:
             colour = self.colours.get(label)
 
@@ -42,6 +71,17 @@ class PlotterUtil:
 
 
 def visualise_graph(nodes):
+    """
+    Utility function that visualises the relationship between nodes as a computational graph.
+    
+    The colour scheme is as follows:
+    - Salmon colour if the node is a neural network weight. (`Node.weight=True`)
+    - Pastel blue if the node requires gradient. (`Node.requires_grad = True`)
+    - Pastel green if it does not requires gradient. (`Node.requires_grad = False`)
+
+    Args:
+        nodes (list[tensorops.Node]): The collection nodes to be examined.
+    """
     G = nx.DiGraph()
     labels = {}
     for node in nodes:
@@ -61,7 +101,6 @@ def visualise_graph(nodes):
         "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
         for (_, node) in zip(G, nodes)
     ]
-    # salmon colour if the node is a neural network weight, pastel blue and green if the node requires grad and if it does not respectively.
     nx.draw(
         G,
         pos,

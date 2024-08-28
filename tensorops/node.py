@@ -1,5 +1,5 @@
 import math
-from abc import ABC
+from abc import ABC, abstractmethod
 
 
 class Node(ABC):
@@ -10,8 +10,8 @@ class Node(ABC):
     Attributes
     ----------
     value (float): The value of the node to be created.
-    parents (list[tensorops.Nodes]): A list of containing parent nodes.
-    children (list[tensorops.Nodes]): A list of containing children nodes.
+    parents (list[tensorops.Nodes]): A list containing parent nodes.
+    children (list[tensorops.Nodes]): A list containing children nodes.
     requires_grad (bool): Whether the node requires gradient tracking.
     weight (bool): Whether the node is a neural network weight.
     current_context (Optional[tensorops.NodeContext]): Manages the operational context for nodes during computation.
@@ -68,11 +68,12 @@ class Node(ABC):
     def exp(self):
         return Exp(self)
 
+    @abstractmethod
     def compute(self):
-        pass
-
+        ...
+    @abstractmethod
     def get_grad(self):
-        pass
+        ...
 
     def zero_grad(self):
         self.grad = 0

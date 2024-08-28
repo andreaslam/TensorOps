@@ -56,7 +56,7 @@ class Model(ABC):
     @abstractmethod
     def calculate_loss(self, output, target):
         """
-        Calulates the loss between the predicted output from the neural network against the desired output using the cost function set in tensorops.Model.loss_criterion.
+        Calulates the loss between the predicted output from the neural network against the desired output using the cost function set in `tensorops.Model.loss_criterion`.
         Args:
             output (tensorops.Node): The prediction by the neural network to be evaluated against the cost function.
             target (tensorops.Node): The desired output for the neural network given an input.
@@ -83,31 +83,31 @@ class Model(ABC):
 
     def backward(self):
         """
-        Performs the backward pass for the current model. Wrapper function for tensorops.backward()
+        Performs the backward pass for the current model. Wrapper function for `tensorops.backward()`
         """
         backward(self.context.nodes)
 
     def zero_grad(self):
         """
-        Sets gradients to all nodes within the model to 0. Wrapper function for tensorops.zero_grad()
+        Sets gradients to all nodes within the model to 0. Wrapper function for `tensorops.zero_grad()`
         """
         zero_grad(self.context.nodes)
 
     def get_weights(self):
         """
-        Returns the nodes that are weights within the tensorops.Model instance. Wrapper function for tensorops.NodeContext.weights_enabled()
+        Returns the nodes that are weights within the `tensorops.Model` instance. Wrapper function for `tensorops.NodeContext.weights_enabled()`
 
         Returns:
-            list[tensorops.Node]: A list of nodes that have Node.weights set to True within nodes present in the tensorops.Model instance
+            list[tensorops.Node]: A list of nodes that have `Node.weights` set to `True` within nodes present in the `tensorops.Model` instance
         """
         return self.context.weights_enabled()
 
     def get_gradients(self):
         """
-        Returns the nodes that have gradient tracking enabled within the tensorops.Model instance. Wrapper function for tensorops.NodeContext.get_gradients()
+        Returns the nodes that have gradient tracking enabled within the `tensorops.Model` instance. Wrapper function for `tensorops.NodeContext.get_gradients()`
 
         Returns:
-            list[tensorops.Node]: A list of nodes that have Node.requires_grad set to True within nodes present in the tensorops.Model instance
+            list[tensorops.Node]: A list of nodes that have `Node.requires_grad` set to `True` within nodes present in the `tensorops.Model` instance
         """
         return self.context.grad_enabled()
 

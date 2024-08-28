@@ -1,7 +1,11 @@
-from abc import abstractmethod
+from abc import abstractmethod, ABC
 
 
-class Loss:
+class Loss(ABC):
+    """
+    `tensorops.Loss` is the abstract base class that handles cost function computation.
+    """
+    
     def __init__(self):
         ...
 
