@@ -1,6 +1,5 @@
 import matplotlib.pyplot as plt
 import networkx as nx
-from networkx.drawing.nx_agraph import graphviz_layout
 
 
 class PlotterUtil:
@@ -57,13 +56,12 @@ def visualise_graph(nodes):
             parent_id = id(parent)
             G.add_edge(parent_id, node_id)
 
-    pos = graphviz_layout(G)
+    pos = nx.planar_layout(G)
     colourmap = [
         "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
         for (_, node) in zip(G, nodes)
     ]
     # salmon colour if the node is a neural network weight, pastel blue and green if the node requires grad and if it does not respectively.
-
     nx.draw(
         G,
         pos,

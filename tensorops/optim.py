@@ -56,7 +56,48 @@ class Adam(Optim):
             else:
                 param.value -= self.lr * m_hat_t / (math.sqrt(v_hat_t) + self.eps)
 
+class AdamW(Optim):
+    def __init__(
+        self,
+        parameters,
+        lr=1e-3,
+        maximise=False,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=0.01,
+        amsgrad=False,
+    ):
+        super().__init__(lr, maximise, weight_decay)
+        self.parameters = parameters
+        self.t = 0
+        self.betas = betas
+        self.m = {param: 0 for param in parameters}
+        self.v = {param: 0 for param in parameters}
+        self.eps = eps
+        self.amsgrad = amsgrad
+        self.v_hat_max = {param: 0 for param in parameters}
 
+    def step(self):
+        self.t += 1
+        for param in filter(lambda p: p.requires_grad, self.parameters):
+            g_t = -param.grad if self.maximise else param.grad
+
+            # if self.weight_decay != 0.0:
+            #     param.value -= self.weight_decay * param.value
+
+            self.m[param] = self.betas[0] * self.m[param] + (1 - self.betas[0]) * g_t
+            self.v[param] = self.betas[1] * self.v[param] + (1 - self.betas[1]) * (g_t ** 2)
+
+            m_hat_t = self.m[param] / (1 - self.betas[0] ** self.t)
+            v_hat_t = self.v[param] / (1 - self.betas[1] ** self.t)
+
+            if self.amsgrad:
+                self.v_hat_max[param] = max(self.v_hat_max[param], v_hat_t)
+                param.value -= self.lr * m_hat_t / (math.sqrt(self.v_hat_max[param]) + self.eps)
+            else:
+                param.value -= self.lr * m_hat_t / (math.sqrt(v_hat_t) + self.eps)       
+
+        
 class SGD(Optim):
     def __init__(
         self,

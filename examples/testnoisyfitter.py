@@ -20,6 +20,33 @@ class LinearModel(nn.Module):
         return self.m * x + self.c
 
 
+def plot_training_data(X_train, y_train, graph_plot):
+    for x, y in zip(X_train, y_train):
+        graph_plot.register_datapoint(
+            datapoint=y.item(),
+            label="Training Data (PyTorch)",
+            x=x.item(),
+            plot_style="scatter",
+            colour="red",
+        )
+
+def training_loop(X_train, y_train, linear_model, criterion, optimiser, loss_plot):
+    for X, y in zip(X_train, y_train):
+        optimiser.zero_grad()
+        output = linear_model(X)
+        loss = criterion(output, y)
+        loss.backward()
+        optimiser.step()
+        loss_plot.register_datapoint(
+                loss.item(), f"{type(linear_model).__name__}-PyTorch"
+            )
+
+def plot_model_output(X_train, linear_model, graph_plot):
+    for x in X_train:
+        graph_plot.register_datapoint(
+            linear_model(x).item(), x=x.item(), label="y=mx+c (PyTorch)"
+        )
+
 if __name__ == "__main__":
     random.seed(42)
 
@@ -33,37 +60,20 @@ if __name__ == "__main__":
 
     linear_model = LinearModel()
     criterion = nn.MSELoss()
-    optimizer = optim.SGD(linear_model.parameters(), lr=1e-2)
+    
+    optimiser = optim.SGD(linear_model.parameters(), lr=1e-2)
 
     loss_plot = PlotterUtil()
 
     graph_plot = PlotterUtil()
 
-    for x, y in zip(X_train, y_train):
-        graph_plot.register_datapoint(
-            datapoint=y.item(),
-            label="Training Data (PyTorch)",
-            x=x.item(),
-            plot_style="scatter",
-            colour="red",
-        )
+    plot_training_data(X_train, y_train, graph_plot)
 
     for _ in tqdm(range(100), desc=f"Training {type(linear_model).__name__}-PyTorch"):
-        for X, y in zip(X_train, y_train):
-            optimizer.zero_grad()
-            output = linear_model(X)
-            loss = criterion(output, y)
-            loss.backward()
-            optimizer.step()
-            loss_plot.register_datapoint(
-                loss.item(), f"{type(linear_model).__name__}-PyTorch"
-            )
+        training_loop(X_train, y_train, linear_model, criterion, optimiser, loss_plot)
 
     print(list(linear_model.parameters()))
     loss_plot.plot()
 
-    for x, y in zip(X_train, y_train):
-        graph_plot.register_datapoint(
-            linear_model(x).item(), x=x.item(), label="y=mx+c (PyTorch)"
-        )
+    plot_model_output(X_train, linear_model, graph_plot)
     graph_plot.plot()

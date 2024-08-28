@@ -6,7 +6,7 @@ import random
 from tqdm import tqdm
 from tensorops.model import Model
 from tensorops.node import Node, forward, backward
-from tensorops.tensorutils import PlotterUtil
+from tensorops.tensorutils import PlotterUtil, visualise_graph
 from tensorops.loss import MSELoss
 from tensorops.optim import SGD
 
@@ -32,6 +32,33 @@ class LinearModel(Model):
             self.targets.set_value(target.value)
             return self.loss
 
+
+def plot_training_data(X_train, y_train, graph_plot):
+    for x, y in zip(X_train, y_train):
+        graph_plot.register_datapoint(
+            datapoint=y.value,
+            label="Training Data (TensorOps)",
+            x=x.value,
+            plot_style="scatter",
+            colour="red",
+        )
+
+def training_loop(X_train, y_train, linear_model, optim, loss_plot):
+    for X, y in zip(X_train, y_train):
+        linear_model.zero_grad()
+        output = linear_model(X)
+        loss = linear_model.calculate_loss(output, y)
+        backward(linear_model.context.nodes)
+        optim.step()
+        loss_plot.register_datapoint(
+                loss.value, f"{type(linear_model).__name__}-TensorOps"
+            )
+
+def plot_model_output(X_train, linear_model, graph_plot):
+    for x in X_train:
+        graph_plot.register_datapoint(
+            linear_model(x).value, x=x.value, label="y=mx+c (TensorOps)"
+        )
 
 if __name__ == "__main__":
     random.seed(42)
@@ -63,31 +90,14 @@ if __name__ == "__main__":
 
     graph_plot = PlotterUtil()
 
-    for x, y in zip(X_train, y_train):
-        graph_plot.register_datapoint(
-            datapoint=y.value,
-            label="Training Data (TensorOps)",
-            x=x.value,
-            plot_style="scatter",
-            colour="red",
-        )
+    plot_training_data(X_train, y_train, graph_plot)
 
     for _ in tqdm(range(100), desc=f"Training {type(linear_model).__name__}-TensorOps"):
-        for X, y in zip(X_train, y_train):
-            linear_model.zero_grad()
-            output = linear_model(X)
-            loss = linear_model.calculate_loss(output, y)
-            backward(linear_model.context.nodes)
-            optim.step()
-            loss_plot.register_datapoint(
-                loss.value, f"{type(linear_model).__name__}-TensorOps"
-            )
+        training_loop(X_train, y_train, linear_model, optim, loss_plot)
 
     print(linear_model)
     loss_plot.plot()
 
-    for x, y in zip(X_train, y_train):
-        graph_plot.register_datapoint(
-            linear_model(x).value, x=x.value, label="y=mx+c (TensorOps)"
-        )
+    plot_model_output(X_train, linear_model, graph_plot)
+    
     graph_plot.plot()
