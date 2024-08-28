@@ -17,16 +17,16 @@ if __name__ == "__main__":
 
     mse_loss = torch.nn.MSELoss()
     loss_plot = PlotterUtil()
-    optimizer = optim.SGD([w_0, w_1, w_2], lr=0.1)
+    optimiser = optim.SGD([w_0, w_1, w_2], lr=0.1)
 
     for gen in range(10):
-        optimizer.zero_grad()
+        optimiser.zero_grad()
         polynomial_result = polynomial(w_0, w_1, w_2, x)
         loss = mse_loss(polynomial_result, target)
         loss.backward()
 
         print(f"generation {gen}: {loss.item():2f}")
 
-        optimizer.step()
+        optimiser.step()
         loss_plot.register_datapoint(loss.item(), "ax^2+bx+c (PyTorch)")
     loss_plot.plot()

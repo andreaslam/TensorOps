@@ -21,20 +21,20 @@ class LinearModel(nn.Module):
         return self.m * x + self.c
 
 
-def train_model(model, optimizer, num_iterations, loss_plot):
+def train_model(model, optimiser, num_iterations, loss_plot):
     criterion = nn.MSELoss()
     random.seed(42)
     for _ in tqdm(
         range(num_iterations), desc=f"Training {type(model).__name__}-PyTorch"
     ):
         model.train()
-        optimizer.zero_grad()
+        optimiser.zero_grad()
         input_value = torch.tensor(random.randint(-5, 5), requires_grad=False)
         target_value = torch.tensor(1.0, requires_grad=False)
         output = model(input_value)
         loss = criterion(output, target_value)
         loss.backward()
-        optimizer.step()
+        optimiser.step()
         loss_plot.register_datapoint(loss.item(), f"{type(model).__name__}-PyTorch")
     loss_plot.plot()
     print(list(model.parameters()))
@@ -42,6 +42,6 @@ def train_model(model, optimizer, num_iterations, loss_plot):
 
 if __name__ == "__main__":
     model = LinearModel()
-    optimizer = optim.Adam(model.parameters(), lr=5e-2)
+    optimiser = optim.Adam(model.parameters(), lr=5e-2)
     loss_plot = PlotterUtil()
-    train_model(model, optimizer, 100, loss_plot)
+    train_model(model, optimiser, 100, loss_plot)
