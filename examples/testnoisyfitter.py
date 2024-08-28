@@ -30,6 +30,7 @@ def plot_training_data(X_train, y_train, graph_plot):
             colour="red",
         )
 
+
 def training_loop(X_train, y_train, linear_model, criterion, optimiser, loss_plot):
     for X, y in zip(X_train, y_train):
         optimiser.zero_grad()
@@ -38,14 +39,16 @@ def training_loop(X_train, y_train, linear_model, criterion, optimiser, loss_plo
         loss.backward()
         optimiser.step()
         loss_plot.register_datapoint(
-                loss.item(), f"{type(linear_model).__name__}-PyTorch"
-            )
+            loss.item(), f"{type(linear_model).__name__}-PyTorch"
+        )
+
 
 def plot_model_output(X_train, linear_model, graph_plot):
     for x in X_train:
         graph_plot.register_datapoint(
             linear_model(x).item(), x=x.item(), label="y=mx+c (PyTorch)"
         )
+
 
 if __name__ == "__main__":
     random.seed(42)
@@ -60,7 +63,7 @@ if __name__ == "__main__":
 
     linear_model = LinearModel()
     criterion = nn.MSELoss()
-    
+
     optimiser = optim.SGD(linear_model.parameters(), lr=1e-2)
 
     loss_plot = PlotterUtil()

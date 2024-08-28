@@ -43,6 +43,7 @@ def plot_training_data(X_train, y_train, graph_plot):
             colour="red",
         )
 
+
 def training_loop(X_train, y_train, linear_model, optim, loss_plot):
     for X, y in zip(X_train, y_train):
         linear_model.zero_grad()
@@ -51,14 +52,16 @@ def training_loop(X_train, y_train, linear_model, optim, loss_plot):
         backward(linear_model.context.nodes)
         optim.step()
         loss_plot.register_datapoint(
-                loss.value, f"{type(linear_model).__name__}-TensorOps"
-            )
+            loss.value, f"{type(linear_model).__name__}-TensorOps"
+        )
+
 
 def plot_model_output(X_train, linear_model, graph_plot):
     for x in X_train:
         graph_plot.register_datapoint(
             linear_model(x).value, x=x.value, label="y=mx+c (TensorOps)"
         )
+
 
 if __name__ == "__main__":
     random.seed(42)
@@ -99,5 +102,5 @@ if __name__ == "__main__":
     loss_plot.plot()
 
     plot_model_output(X_train, linear_model, graph_plot)
-    
+
     graph_plot.plot()
