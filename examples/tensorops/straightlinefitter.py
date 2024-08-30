@@ -1,7 +1,6 @@
 # Given a model y = mx + c, fitters constructed using the tensorops.Model base class and fits to the equation y = 1
 # The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
 
-
 import random
 from tensorops.tensorutils import PlotterUtil
 from tensorops.loss import MSELoss

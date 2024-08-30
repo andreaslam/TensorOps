@@ -41,6 +41,7 @@ class CubicModel(nn.Module):
     def forward(self, x):
         return self.a * (x**3) + self.b * (x**2) + self.c * x + self.d
 
+
 def train_model(model, criterion, optimiser, num_iterations, loss_plot, results):
     for _ in tqdm(
         range(num_iterations), desc=f"Training {type(model).__name__}-TensorOps"

@@ -38,7 +38,9 @@ class L1Loss(Loss):
             float: The computed L1 loss value.
         """
         if isinstance(actual, list) and isinstance(target, list):
-            assert len(actual) == len(target), "Actual and target lists must have the same length."
+            assert len(actual) == len(
+                target
+            ), "Actual and target lists must have the same length."
             total_loss = sum(abs(a - t) for a, t in zip(actual, target))
             return total_loss / len(actual)
         else:
@@ -51,26 +53,29 @@ class MSELoss(Loss):
 
     def loss(self, actual, target):
         """
-        Calculate the MSE loss between the actual and target values.
-
-        If the inputs are lists, it computes the average squared difference element-wise.
-        If the inputs are floats, it computes the squared difference.
+        Calculate the MSE loss between the actual and target values. Works with both single values and lists of `tensorops.node.Node`.
 
         Args:
-            actual (Union[float, List[float]]): The actual output value(s).
-            target (Union[float, List[float]]): The target output value(s).
+            actual (Union[float, List[tensorops.node.Node]]): The actual output value(s).
+            target (Union[float, List[tensorops.node.Node]]): The target output value(s).
 
         Returns:
             float: The computed MSE loss value.
         """
+
         if isinstance(actual, list) and isinstance(target, list):
-            assert len(actual) == len(target), "Actual and target lists must have the same length."
-            
+            assert len(actual) == len(
+                target
+            ), "Actual and target lists must have the same length."
+
             total_loss = Node(0.0, requires_grad=False, weight=False)
-            
+
             for actual_datapoint, target_datapoint in zip(actual, target):
-                total_loss = total_loss + ((actual_datapoint - target_datapoint) ** Node(2, requires_grad=False, weight=False))
-            
+                total_loss = total_loss + (
+                    (actual_datapoint - target_datapoint)
+                    ** Node(2, requires_grad=False, weight=False)
+                )
+
             return total_loss / Node(len(actual), requires_grad=False)
         else:
             return (target - actual) ** 2

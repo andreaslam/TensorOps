@@ -109,6 +109,7 @@ class Model(ABC):
     def __len__(self):
         return len(self.context.nodes)
 
+
 class Layer:
     """
     `tensorops.model.Layer` initialises a layer of a Fully Connected Network (FCN).
@@ -154,17 +155,25 @@ class Layer:
             ), "Length of output_weights must match num_output_nodes."
             num_weights = self.num_input_nodes * self.num_output_nodes
             assert (
-                sum(len(x) for x in output_weights)
-                == num_weights
+                sum(len(x) for x in output_weights) == num_weights
             ), "Each weight list must match num_input_nodes."
         else:
-            output_weights = [[Node(random.uniform(-1,1), requires_grad=True, weight=True) for _ in range(num_input_nodes)] for _ in range(num_output_nodes)]
+            output_weights = [
+                [
+                    Node(random.uniform(-1, 1), requires_grad=True, weight=True)
+                    for _ in range(num_input_nodes)
+                ]
+                for _ in range(num_output_nodes)
+            ]
         if output_bias:
             assert (
                 len(output_bias) == self.num_output_nodes
             ), "Length of output_bias must match num_output_nodes."
         else:
-            output_bias = [Node(random.uniform(-1,1), requires_grad=True, weight=True) for _ in range(self.num_output_nodes)]
+            output_bias = [
+                Node(random.uniform(-1, 1), requires_grad=True, weight=True)
+                for _ in range(self.num_output_nodes)
+            ]
         self.layer_output = [
             Activation(
                 self.num_input_nodes,
@@ -194,7 +203,9 @@ class Layer:
         for node, forward_input in zip(self.input_nodes, forward_inputs):
             node.set_value(forward_input.value)
 
-        layer_outputs_in_nodes = [] # self.layer_outputs are all `tensorops.model.Activations`, cannot be used directly in further tensor operations.
+        layer_outputs_in_nodes = (
+            []
+        )  # self.layer_outputs are all `tensorops.model.Activations`, cannot be used directly in further tensor operations.
         for activation in self.layer_output:
             layer_outputs_in_nodes.append(activation(self.input_nodes))
         return layer_outputs_in_nodes
