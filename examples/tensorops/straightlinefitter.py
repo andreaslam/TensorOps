@@ -17,12 +17,12 @@ class LinearModel(Model):
         with self.context:
             self.m = Node(0.7, requires_grad=True, weight=True)
             self.c = Node(0.3, requires_grad=True, weight=True)
-            self.output_node = self.m * self.inputs + self.c
+            self.output_node = self.m * self.input_nodes + self.c
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
         with self.context:
-            self.inputs.set_value(input_node.value)
+            self.input_nodes.set_value(input_node.value)
             forward(self.context.nodes)
             return self.output_node
 

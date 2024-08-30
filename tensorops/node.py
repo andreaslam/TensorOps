@@ -117,12 +117,27 @@ class NodeContext:
         self.nodes.append(node)
 
     def recompute(self):
+        """
+        Recomputes all nodes within the NodeContext.
+        """
         forward(self.nodes)
 
     def weights_enabled(self):
+        """
+        Returns a list of all nodes that are neural network weights
+
+        Returns:
+            List[tensorops.node.Node]: list of all nodes that are neural network weights
+        """
         return [node for node in self.nodes if node.weight]
 
     def grad_enabled(self):
+        """
+        Returns a list of all nodes that have gradient tracking enabled.
+
+        Returns:
+            List[tensorops.node.Node]: list of all nodes that have gradient tracking enabled.
+        """
         return [node for node in self.nodes if node.requires_grad]
 
     def __repr__(self) -> str:
@@ -331,11 +346,11 @@ class Sigmoid(Node):
             parent.children.append(self)
 
     def compute(self):
-        self.value = 1 / (1 + math.exp(-self.node1.value))
+        self.value = 1.0 / (1.0 + math.exp(-self.node1.value))
 
     def get_grad(self):
         sigmoid_value = self.value
-        self.node1.grad += self.grad * sigmoid_value * (1 - sigmoid_value)
+        self.node1.grad += self.grad * sigmoid_value * (1.0 - sigmoid_value)
 
 
 def forward(nodes):
@@ -353,3 +368,11 @@ def backward(nodes):
 def zero_grad(nodes):
     for node in nodes:
         node.zero_grad()
+
+
+def sigmoid(node):
+    return Sigmoid(node)
+
+
+def relu(node):
+    return ReLU(node)

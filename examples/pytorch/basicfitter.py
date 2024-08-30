@@ -1,5 +1,5 @@
 # Fits a polynomial (ax^2 + bx + c) to a single value and optimised using torch.optim.SGD() and torch.Tensor()
-# This code is to be used as comparison with basicfitter.py
+# This code is to be used as comparison with examples/tensorops/basicfitter.py
 
 import torch
 import torch.optim as optim

@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import networkx as nx
+import random
 
 plt.style.use("seaborn")
 
@@ -11,6 +12,8 @@ class PlotterUtil:
 
     Attributes
     ----------
+    x_label (string): The label for the x-axis.
+    y_label (string): The label for the y-axis.
     datapoints (dict[string, Union[int, float]]): Contains all data within a single category of the plot.
     labels (list[string]): A list containing labels of each category of data being plotted.
     xs (dict[string, Union[int, float]]): Contains the x-axis data for each category of data.
@@ -18,7 +21,9 @@ class PlotterUtil:
     colours (list[string]): List of colours for each category of data.
     """
 
-    def __init__(self):
+    def __init__(self, x_label="Epoch", y_label="Loss"):
+        self.x_label = x_label
+        self.y_label = y_label
         self.datapoints = {}
         self.labels = []
         self.xs = {}
@@ -69,8 +74,8 @@ class PlotterUtil:
                     self.xs[label], self.datapoints[label], label=label, color=colour
                 )
 
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
+        plt.xlabel(self.x_label)
+        plt.ylabel(self.y_label)
         plt.legend()
         plt.show()
         plt.close()

@@ -1,6 +1,6 @@
 # Given a model y = mx + c, constructed using the torch.nn.Module base class and fits to the equation y = 1
 # The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
-# This code is to be used as comparison with straightlinefitter.py
+# This code is to be used as comparison with examples/tensorops/straightlinefitter.py
 
 
 import random

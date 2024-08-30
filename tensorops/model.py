@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
-from tensorops.node import Node, NodeContext, Sigmoid, backward, zero_grad
+from tensorops.node import Node, NodeContext, forward, backward, zero_grad
+import random
 
 
 class Model(ABC):
     """
-    `tensorops.Model` is the abstract base class for a neural network.
+    `tensorops.model.Model` is the abstract base class for a neural network.
 
     The values of the `tensorops.inputs` and `tensorops.targets` can be changed and accessed by their respective properties, which will trigger recomuptation of the graph.
 
@@ -12,32 +13,17 @@ class Model(ABC):
     ----------
     context (tensorops.NodeContext): Context manager to keep track and store nodes for forward and backward pass as a computational graph.
     loss_criterion (tensorops.Loss): Cost function of the neural network
-    inputs (tensorops.Node): Inputs for the model.
+    input_nodes (tensorops.Node): Inputs for the model.
     targets (tensorops.Node): Targets for the model.
+    path (string): Path to save and load a model.
     """
 
     def __init__(self, loss_criterion):
         self.context = NodeContext()
         self.loss_criterion = loss_criterion
         with self.context:
-            self._inputs = Node(0.0, requires_grad=False)
-            self._targets = Node(0.0, requires_grad=False)
-
-    @property
-    def inputs(self):
-        return self._inputs
-
-    @inputs.setter
-    def inputs(self, value):
-        self._inputs.set_value(value)
-
-    @property
-    def targets(self):
-        return self._targets
-
-    @targets.setter
-    def targets(self, value):
-        self._targets.set_value(value)
+            self.input_nodes = Node(0.0, requires_grad=False)
+            self.targets = Node(0.0, requires_grad=False)
 
     @abstractmethod
     def forward(self, input_node):
@@ -65,21 +51,6 @@ class Model(ABC):
             Model.loss (tensorops.Node): The resulting node as an output from the calculations of the neural network.
         """
         ...
-
-    def add_node(self, value, requires_grad=True, weight=False):
-        """
-        Creates a node to be added to the computational graph stored in `tensorops.Model.context`
-        Args:
-            value (float): The value of the node to be created.
-            requires_grad (bool): Whether the node requires gradient tracking.
-            weight (bool): Whether the node is a neural network weight.
-
-        Returns:
-            Model.output_node (tensorops.Node): that has been appended to computational graph.
-        """
-
-        with self.context:
-            return Node(value, requires_grad, weight)
 
     def backward(self):
         """
@@ -119,6 +90,203 @@ class Model(ABC):
             return f"{type(self).__name__}(weights={[node for node in self.context.nodes if node.weight]})"
         return "[Warning]: no weights initialised yet"
 
+    def load(self, path):
+        pass
 
-def sigmoid(node):
-    return Sigmoid(node)
+    def save(self, path):
+        pass
+
+
+class Layer:
+    """
+    `tensorops.model.Layer` initialises a layer of a Fully Connected Network (FCN).
+
+    Attributes
+    ----------
+    context (tensorops.node.NodeContext): Context manager to keep track and store nodes for forward and backward pass as a computational graph.
+    weights (list[list[tensorops.node.Node]]): a m × n matrix of `tensorops.node.Node`, where m is the number of inputs per `model.Activation` and n is the number of `model.Activation` in a layer.
+    bias (list[tensorops.node.Node]): a list of biases for each `tensorops.model.Activation`.
+    seed (Optional[int]): Optional seed for `random.seed()`.
+    num_input_nodes (int): Number of neural network inputs in the layer.
+    num_output_nodes (int): Number of neurones in the layer.
+    activation_function (Optional[Callable]): Non-linear function that determines the activation level of the neurones in the layer based on its input.
+    layer_output (tensorops.node.Node): Outputs of neural activation from the layer.
+    """
+
+    def __init__(
+        self,
+        context,
+        num_input_nodes,
+        num_output_nodes,
+        activation_function,
+        output_weights=None,
+        output_bias=None,
+        seed=None,
+    ):
+        self.seed = seed
+        if self.seed:
+            random.seed(self.seed)
+        self.context = context
+
+        # TODO do asserts for layer sizes
+
+        self.num_input_nodes = num_input_nodes
+        self.input_nodes = [
+            Node(0.0, requires_grad=False, weight=False)
+            for _ in range(self.num_input_nodes)
+        ]
+        self.num_output_nodes = num_output_nodes
+        self.activation_function = activation_function
+
+        if output_weights:
+            assert (
+                len(output_weights) == self.num_output_nodes
+            ), "Length of output_weights must match num_output_nodes."
+            assert (
+                sum(len(x) for x in output_weights)
+                == self.num_input_nodes * self.num_output_nodes
+            ), "Each weight list must match num_input_nodes."
+
+        if output_bias:
+            assert (
+                len(output_bias) == self.num_output_nodes
+            ), "Length of output_bias must match num_output_nodes."
+
+        self.layer_output = [
+            Activation(
+                self.num_input_nodes,
+                self.activation_function,
+                self.context,
+                activation_weight,
+                activation_bias,
+                self.seed,
+            )
+            for activation_weight, activation_bias in zip(output_weights, output_bias)
+        ]
+
+        self.weights = [activation.weights for activation in self.layer_output]
+        self.bias = [activation.bias for activation in self.layer_output]
+
+    def forward(self, forward_inputs):
+        """
+        Performs a forward pass for all neurones (`tensorops.model.Activation`) within a single neural network layer.
+
+        Args:
+            forward_inputs (list[tensorops.node.Node]): The input nodes for a single neural network layer.
+        """
+
+        assert len(forward_inputs) == self.num_input_nodes
+        for node, forward_input in zip(self.input_nodes, forward_inputs):
+            node.set_value(forward_input.value)
+
+        for activation in self.layer_output:
+            activation(self.input_nodes)
+
+        return self.layer_output
+
+    def __call__(self, forward_inputs):
+        return self.forward(forward_inputs)
+
+
+class Activation:
+    """
+    `tensorops.model.Activation` mimics a biological neurone, taking a sum of multiplications between each weight and input, and adding a bias (a constant) on top of the sum and applying activation function at the end.
+
+    Mathematically, a neurone is defined as:
+        f(sum(x_i, w_i) + c)
+    where:
+        - f() is the non-linear activation function.
+        - x_i, w_i are the ith input and weight in a list containing all inputs and weights for the neurone respectively.
+        - c is a constant added to the function.
+
+    Attributes
+    ----------
+    context (tensorops.node.NodeContext): Context manager to keep track and store nodes for forward and backward pass as a computational graph.
+    num_input_nodes (int): Number of neural network inputs for the neurone.
+    seed (Optional[int]): Optional seed for `random.seed()`.
+    input_nodes (list[tensorops.node.Node]): Inputs for the neurone.
+    weights (list[tensorops.node.Node]): Weights for each input.
+    bias (tensorops.node.Node): Constant added to the function.
+    activation_function (Optional[Callable]): Non-linear function that determines the activation level of the neurone based on its input.
+    activation_output (tensorops.node.Node): Output node of neural activation.
+    """
+
+    def __init__(
+        self,
+        num_input_nodes,
+        activation_function,
+        context,
+        weights=None,
+        bias=None,
+        seed=None,
+    ):
+        self.num_input_nodes = num_input_nodes
+        self.seed = seed
+        if self.seed:
+            random.seed(self.seed)
+        self.context = context
+        with self.context:
+            self.input_nodes = [
+                Node(0.0, requires_grad=False, weight=False)
+                for _ in range(self.num_input_nodes)
+            ]
+            self.activation_function = activation_function
+
+            if weights:
+                assert len(weights) == self.num_input_nodes
+                self.weights = [
+                    Node(weight.value, requires_grad=True, weight=True)
+                    for weight in weights
+                ]
+            else:
+                self.weights = [
+                    Node(random.uniform(-1, 1), requires_grad=True, weight=True)
+                    for _ in range(self.num_input_nodes)
+                ]
+
+            if bias:
+                self.bias = Node(bias.value, requires_grad=True, weight=True)
+            else:
+                self.bias = Node(random.uniform(-1, 1), requires_grad=True, weight=True)
+
+            output_node = Node(0.0, requires_grad=True, weight=True)
+            for weight, input_node in zip(self.weights, self.input_nodes):
+                output_node += weight * input_node
+
+            if self.activation_function:
+                self.activation_output = self.activation_function(
+                    output_node + self.bias
+                )
+            else:
+                self.activation_output = output_node + self.bias
+
+    def forward(self, forward_inputs):
+        """
+        Performs an activation step for a single neurone.
+
+        Args:
+            forward_inputs (list[tensorops.node.Node]): The input nodes for a single neurone.
+        """
+
+        assert len(forward_inputs) == self.num_input_nodes
+        for node, forward_input in zip(self.input_nodes, forward_inputs):
+            node.set_value(forward_input.value)
+        forward(self.context.nodes)
+        return self.activation_output
+
+    def __call__(self, forward_inputs):
+        return self.forward(forward_inputs)
+
+    def __repr__(self):
+        weights_and_inputs_string = ", ".join(
+            f"(weight_{num}: {weight}, input_{num}: {node})"
+            for num, (weight, node) in enumerate(zip(self.weights, self.input_nodes))
+        )
+
+        return f"""
+        {type(self).__name__}(
+        {weights_and_inputs_string},
+        bias: {self.bias},
+        activation_function: {self.activation_function.__name__}
+        )
+        """

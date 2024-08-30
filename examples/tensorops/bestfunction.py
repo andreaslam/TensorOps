@@ -15,12 +15,12 @@ class LinearModel(Model):
         with self.context:
             self.m = Node(0.7, requires_grad=True, weight=True)
             self.c = Node(0.3, requires_grad=True, weight=True)
-            self.output_node = self.m * self.inputs + self.c
+            self.output_node = self.m * self.input_nodes + self.c
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
         with self.context:
-            self.inputs.set_value(input_node.value)
+            self.input_nodes.set_value(input_node.value)
             forward(self.context.nodes)
             return self.output_node
 
@@ -39,13 +39,13 @@ class QuadraticModel(Model):
             self.b = Node(0.3, requires_grad=True, weight=True)
             self.c = Node(0.3, requires_grad=True, weight=True)
             self.output_node = (
-                self.a * (self.inputs**2) + self.b * self.inputs + self.c
+                self.a * (self.input_nodes**2) + self.b * self.input_nodes + self.c
             )
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
         with self.context:
-            self.inputs.set_value(input_node.value)
+            self.input_nodes.set_value(input_node.value)
             forward(self.context.nodes)
             return self.output_node
 
@@ -65,16 +65,16 @@ class CubicModel(Model):
             self.c = Node(0.3, requires_grad=True, weight=True)
             self.d = Node(-0.7, requires_grad=True, weight=True)
             self.output_node = (
-                self.a * (self.inputs**3)
-                + self.b * (self.inputs**2)
-                + self.c * self.inputs
+                self.a * (self.input_nodes**3)
+                + self.b * (self.input_nodes**2)
+                + self.c * self.input_nodes
                 + self.d
             )
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
         with self.context:
-            self.inputs.set_value(input_node.value)
+            self.input_nodes.set_value(input_node.value)
             forward(self.context.nodes)
             return self.output_node
 

@@ -1,14 +1,13 @@
 # Given an equation of a line (y = mx + c) and random inputs from (-5,5) the linear neural network, built and trained using PyTorch, will try and fit to the training data.
 # There is random noise added to the resulting y value of the equation. This is to test the model's ability to adjust its weights for a line of best fit.
 
-
 import random
 from tqdm import tqdm
 from tensorops.model import Model
 from tensorops.node import Node, forward, backward
-from tensorops.tensorutils import PlotterUtil, visualise_graph
 from tensorops.loss import MSELoss
 from tensorops.optim import SGD
+from tensorops.tensorutils import PlotterUtil
 
 
 class LinearModel(Model):
@@ -17,12 +16,12 @@ class LinearModel(Model):
         with self.context:
             self.m = Node(0.6, requires_grad=True, weight=True)
             self.c = Node(0.7, requires_grad=True, weight=True)
-            self.output_node = self.m * self.inputs + self.c
+            self.output_node = self.m * self.input_nodes + self.c
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
         with self.context:
-            self.inputs.set_value(input_node.value)
+            self.input_nodes.set_value(input_node.value)
             forward(self.context.nodes)
             return self.output_node
 
@@ -91,7 +90,7 @@ if __name__ == "__main__":
 
     loss_plot = PlotterUtil()
 
-    graph_plot = PlotterUtil()
+    graph_plot = PlotterUtil(x_label="x", y_label="y")
 
     plot_training_data(X_train, y_train, graph_plot)
 

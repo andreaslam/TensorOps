@@ -1,6 +1,6 @@
 # Given three polynomial fitters constructed using the torch.nn.Module base class and fits to the point (2,1).
 # The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
-# This code is to be used as comparison with bestfunction.py
+# This code is to be used as comparison with examples/tensorops/bestfunction.py
 
 import torch
 import torch.nn as nn

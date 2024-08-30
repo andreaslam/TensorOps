@@ -1,6 +1,6 @@
 # Given an equation of a line (y = mx + c) and random inputs from (-5,5) the linear neural network, built and trained using TensorOps, will try and fit to the training data.
 # There is random noise added to the resulting y value of the equation. This is to test the model's ability to adjust its weights for a line of best fit.
-# This code is to be used as comparison with noisyfitter.py
+# This code is to be used as comparison with examples/tensorops/noisyfitter.py
 
 import random
 from tqdm import tqdm
@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     loss_plot = PlotterUtil()
 
-    graph_plot = PlotterUtil()
+    graph_plot = PlotterUtil(x_label="x", y_label="y")
 
     plot_training_data(X_train, y_train, graph_plot)
 
