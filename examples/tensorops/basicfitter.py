@@ -15,8 +15,8 @@ if __name__ == "__main__":
         w_2 = Node(0.4, requires_grad=True, weight=True)
 
         polynomial_result = w_0 + w_1 * x + w_2 * (x**2)  # predictor function
-        loss_fn = MSELoss()
-        loss = loss_fn.loss(polynomial_result, target)
+        loss_criterion = MSELoss()
+        loss = loss_criterion(polynomial_result, target)
         loss_plot = PlotterUtil()
         optim = SGD([w_0, w_1, w_2], lr=0.1)
 

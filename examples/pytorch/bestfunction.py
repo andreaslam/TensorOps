@@ -5,7 +5,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import matplotlib.pyplot as plt
+from tensorops.tensorutils import PlotterUtil
 from tqdm import tqdm
 
 
@@ -41,25 +41,6 @@ class CubicModel(nn.Module):
     def forward(self, x):
         return self.a * (x**3) + self.b * (x**2) + self.c * x + self.d
 
-
-class LossPlotter:
-    def __init__(self):
-        self.losses = {}
-
-    def register_datapoint(self, loss, model_name):
-        if model_name not in self.losses:
-            self.losses[model_name] = []
-        self.losses[model_name].append(loss)
-
-    def plot(self):
-        for model_name, losses in self.losses.items():
-            plt.plot(losses, label=model_name)
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.legend()
-        plt.show()
-
-
 def train_model(model, criterion, optimiser, num_iterations, loss_plot, results):
     for _ in tqdm(
         range(num_iterations), desc=f"Training {type(model).__name__}-TensorOps"
@@ -77,7 +58,7 @@ def train_model(model, criterion, optimiser, num_iterations, loss_plot, results)
 if __name__ == "__main__":
     models = [LinearModel(), QuadraticModel(), CubicModel()]
     criterion = nn.MSELoss()
-    loss_plot = LossPlotter()
+    loss_plot = PlotterUtil()
     results = {}
     for model in models:
         optimiser = optim.Adam(model.parameters(), lr=5e-3)

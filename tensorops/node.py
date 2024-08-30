@@ -17,6 +17,9 @@ class Node:
     """
 
     def __init__(self, value, requires_grad=True, weight=False):
+        value = float(value)
+        assert isinstance(value, float), f"Datatype must be a float, not {type(value)}"
+
         self.value = value
         self.grad = 0
         self.parents = []
@@ -376,3 +379,10 @@ def sigmoid(node):
 
 def relu(node):
     return ReLU(node)
+
+
+def mean(items):
+    total = Node(0.0, requires_grad=False, weight=False)
+    for i in items:
+        total += i
+    return total / Node(len(items), requires_grad=False, weight=False)

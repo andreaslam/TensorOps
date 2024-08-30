@@ -19,10 +19,9 @@ class LinearModel(Model):
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
-        with self.context:
-            self.input_nodes.set_value(input_node.value)
-            forward(self.context.nodes)
-            return self.output_node
+        self.input_nodes.set_value(input_node.value)
+        forward(self.context.nodes)
+        return self.output_node
 
     def calculate_loss(self, output, target):
         with self.context:
@@ -44,10 +43,9 @@ class QuadraticModel(Model):
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
-        with self.context:
-            self.input_nodes.set_value(input_node.value)
-            forward(self.context.nodes)
-            return self.output_node
+        self.input_nodes.set_value(input_node.value)
+        forward(self.context.nodes)
+        return self.output_node
 
     def calculate_loss(self, output, target):
         with self.context:
@@ -73,10 +71,9 @@ class CubicModel(Model):
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
-        with self.context:
-            self.input_nodes.set_value(input_node.value)
-            forward(self.context.nodes)
-            return self.output_node
+        self.input_nodes.set_value(input_node.value)
+        forward(self.context.nodes)
+        return self.output_node
 
     def calculate_loss(self, output, target):
         with self.context:

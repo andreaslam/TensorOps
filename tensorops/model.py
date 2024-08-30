@@ -21,17 +21,18 @@ class Model(ABC):
     def __init__(self, loss_criterion):
         self.context = NodeContext()
         self.loss_criterion = loss_criterion
+        self.model_layers = []
         with self.context:
             self.input_nodes = Node(0.0, requires_grad=False)
             self.targets = Node(0.0, requires_grad=False)
 
     @abstractmethod
-    def forward(self, input_node):
+    def forward(self, model_inputs):
         """
         Executes a forward pass of the neural network given input.
 
         Args:
-            input_node (tensorops.Node): The input for the neural network.
+            model_inputs (tensorops.Node): The input for the neural network.
 
         Returns:
             output_node (tensorops.Node): The resulting node as an output from the calculations of the neural network.
@@ -51,6 +52,15 @@ class Model(ABC):
             Model.loss (tensorops.Node): The resulting node as an output from the calculations of the neural network.
         """
         ...
+
+    def add_layer(self, num_input_nodes, num_output_nodes, activation_function):
+        if self.model_layers:
+            assert num_input_nodes == self.model_layers[-1].num_input_nodes
+        new_layer = Layer(
+            self.context, num_input_nodes, num_output_nodes, activation_function
+        )
+
+        self.model_layers.append(new_layer)
 
     def backward(self):
         """
@@ -96,6 +106,8 @@ class Model(ABC):
     def save(self, path):
         pass
 
+    def __len__(self):
+        return len(self.context.nodes)
 
 class Layer:
     """
@@ -128,8 +140,6 @@ class Layer:
             random.seed(self.seed)
         self.context = context
 
-        # TODO do asserts for layer sizes
-
         self.num_input_nodes = num_input_nodes
         self.input_nodes = [
             Node(0.0, requires_grad=False, weight=False)
@@ -142,16 +152,19 @@ class Layer:
             assert (
                 len(output_weights) == self.num_output_nodes
             ), "Length of output_weights must match num_output_nodes."
+            num_weights = self.num_input_nodes * self.num_output_nodes
             assert (
                 sum(len(x) for x in output_weights)
-                == self.num_input_nodes * self.num_output_nodes
+                == num_weights
             ), "Each weight list must match num_input_nodes."
-
+        else:
+            output_weights = [[Node(random.uniform(-1,1), requires_grad=True, weight=True) for _ in range(num_input_nodes)] for _ in range(num_output_nodes)]
         if output_bias:
             assert (
                 len(output_bias) == self.num_output_nodes
             ), "Length of output_bias must match num_output_nodes."
-
+        else:
+            output_bias = [Node(random.uniform(-1,1), requires_grad=True, weight=True) for _ in range(self.num_output_nodes)]
         self.layer_output = [
             Activation(
                 self.num_input_nodes,
@@ -173,16 +186,18 @@ class Layer:
 
         Args:
             forward_inputs (list[tensorops.node.Node]): The input nodes for a single neural network layer.
+        Returns:
+            output_nodes (list[tensorops.node.Node]): The list of outputs produced by the neural netwrk layer.
         """
 
         assert len(forward_inputs) == self.num_input_nodes
         for node, forward_input in zip(self.input_nodes, forward_inputs):
             node.set_value(forward_input.value)
 
+        layer_outputs_in_nodes = [] # self.layer_outputs are all `tensorops.model.Activations`, cannot be used directly in further tensor operations.
         for activation in self.layer_output:
-            activation(self.input_nodes)
-
-        return self.layer_output
+            layer_outputs_in_nodes.append(activation(self.input_nodes))
+        return layer_outputs_in_nodes
 
     def __call__(self, forward_inputs):
         return self.forward(forward_inputs)

@@ -43,5 +43,4 @@ if __name__ == "__main__":
     print("Layer biases:", layer.bias)
 
     y = layer(X)
-
-    print(f"outputs: {[output.activation_output.value for output in y]}")
+    print(f"outputs: {[output.value for output in y]}")

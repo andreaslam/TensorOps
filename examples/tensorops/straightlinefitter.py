@@ -21,10 +21,9 @@ class LinearModel(Model):
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
     def forward(self, input_node):
-        with self.context:
-            self.input_nodes.set_value(input_node.value)
-            forward(self.context.nodes)
-            return self.output_node
+        self.input_nodes.set_value(input_node.value)
+        forward(self.context.nodes)
+        return self.output_node
 
     def calculate_loss(self, output, target):
         with self.context:
@@ -51,8 +50,8 @@ def train_model(model, optim, num_iterations, loss_plot):
 
 
 if __name__ == "__main__":
-    criterion = MSELoss()
-    model = LinearModel(criterion)
+    loss_criterion = MSELoss()
+    model = LinearModel(loss_criterion)
     loss_plot = PlotterUtil()
     optim = Adam(model.get_weights(), lr=5e-2)
     train_model(model, optim, 100, loss_plot)

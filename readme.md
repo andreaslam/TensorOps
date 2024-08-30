@@ -36,10 +36,12 @@ Most examples implemented in the examples folder, will have a corresponding [PyT
 - Node weight and gradient tracking (enable/disable)
 - Arithmetic operations (BIDMAS, negation, exponentiation)
 - Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid)
+- Lazy evaluation
 
 ### Model
-- Customisable neural networks
-- Customisable methods
+- Mix and match activation functions
+- Configurable layer sizes
+- Customisable loss functions
 
 ## Loss functions
 - Mean Absolute Error
