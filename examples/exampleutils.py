@@ -27,7 +27,28 @@ def tensor_to_node(tensor, optional_open_handle):
 
 
 def prepare_mnist_dataset(num_samples_train, num_samples_test, tensorops_format=True):
-    """ """
+    """
+    Downloads and processes the MNIST dataset.
+
+    Args:
+        num_samples_train (int): The number of training samples to process.
+        num_samples_test (int): The number of test samples to process.
+        tensorops_format (bool, optional): If True, converts the dataset into a custom tensor operations format and saves it to files. Defaults to True.
+
+    Returns:
+        If `tensorops_format` is True:
+            train_data_nodes: Processed training data in node format.
+            train_labels_nodes: Processed training labels in node format.
+            test_data_nodes: Processed test data in node format.
+            test_labels_nodes: Processed test labels in node format.
+
+        If `tensorops_format` is False:
+            train_data: Training data as a reshaped tensor.
+            train_labels: Training labels as a reshaped tensor.
+            test_data: Test data as a reshaped tensor.
+            test_labels: Test labels as a reshaped tensor.
+    """
+
     transform = transforms.Compose([transforms.ToTensor()])
 
     trainset = torchvision.datasets.MNIST(
@@ -76,12 +97,16 @@ def prepare_mnist_dataset(num_samples_train, num_samples_test, tensorops_format=
     if tensorops_format:
         handle = open("./data/MNIST/processed_node/train_data_nodes.pkl", "ab")
         train_data_nodes = tensor_to_node(train_data[:num_samples_train], handle)
+
         handle = open("./data/MNIST/processed_node/train_labels_nodes.pkl", "ab")
         train_labels_nodes = tensor_to_node(train_labels[:num_samples_train], handle)
+
         handle = open("./data/MNIST/processed_node/test_data_nodes.pkl", "ab")
         test_data_nodes = tensor_to_node(test_data[:num_samples_test], handle)
+
         handle = open("./data/MNIST/processed_node/test_labels_nodes.pkl", "ab")
         test_labels_nodes = tensor_to_node(test_labels[:num_samples_test], handle)
+
         return train_data_nodes, train_labels_nodes, test_data_nodes, test_labels_nodes
 
     return train_data, train_labels, test_data, test_labels
