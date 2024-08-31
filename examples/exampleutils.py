@@ -174,4 +174,4 @@ def verify_dataset(
 
 
 if __name__ == "__main__":
-    prepare_mnist_dataset(len, len)
+    prepare_mnist_dataset(len, len, False)

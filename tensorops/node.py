@@ -104,13 +104,15 @@ class Node:
         assert pickle_instance.writable()
 
         pickle.dump(self, pickle_instance)
-
-    def load(self, path):
+    
+    @staticmethod
+    def load(path, limit=None):
         """
         Loads a single `tensorops.node.Node()` or a list[tensorops.node.Node()].
 
         Args:
             path (str): The file path from which to load the node(s).
+            limit (int, optional): Loads the first n items from the pickle file.
 
         Returns:
             Union[tensorops.node.Node, list[tensorops.node.Node]]: The loaded node(s).
@@ -119,12 +121,20 @@ class Node:
         items = []
 
         with open(path, "rb") as f:
-            while True:
-                try:
-                    data = pickle.load(f)
-                    items.append(data)
-                except EOFError:
-                    break
+            if limit:
+                for _ in range(limit):
+                    try:
+                        data = pickle.load(f)
+                        items.append(data)
+                    except EOFError:
+                        break
+            else:
+                while True:
+                    try:
+                        data = pickle.load(f)
+                        items.append(data)
+                    except EOFError:
+                        break
 
         if len(items) == 1:
             return items[0]
