@@ -1,9 +1,11 @@
 # Fits a polynomial (ax^2 + bx + c) to a single value and optimised using torch.optim.SGD() and torch.Tensor()
 # This code is to be used as comparison with examples/tensorops/basicfitter.py
 
+
 import torch
 import torch.optim as optim
 from tensorops.tensorutils import PlotterUtil
+
 
 if __name__ == "__main__":
     target = torch.tensor(10.0, dtype=torch.float64, requires_grad=False)

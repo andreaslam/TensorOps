@@ -1,34 +1,24 @@
 # Given an equation of a line (y = mx + c) and random inputs from (-5,5) the linear neural network, built and trained using PyTorch, will try and fit to the training data.
 # There is random noise added to the resulting y value of the equation. This is to test the model's ability to adjust its weights for a line of best fit.
 
+
 import random
 from tqdm import tqdm
-from tensorops.model import Model
-from tensorops.node import Node, forward, backward
+from tensorops.node import Node
 from tensorops.loss import MSELoss
 from tensorops.optim import SGD
-from tensorops.tensorutils import PlotterUtil
+from tensorops.tensorutils import PlotterUtil, visualise_graph
+from models.simplenet import SimpleModel
 
 
-class LinearModel(Model):
+class LinearModel(SimpleModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:
             self.m = Node(0.6, requires_grad=True, weight=True)
             self.c = Node(0.7, requires_grad=True, weight=True)
             self.output_node = self.m * self.input_nodes + self.c
-            self.loss = loss_criterion.loss(self.targets, self.output_node)
-
-    def forward(self, input_node):
-        self.input_nodes.set_value(input_node.value)
-        forward(self.context.nodes)
-        return self.output_node
-
-    def calculate_loss(self, output, target):
-        with self.context:
-            self.output_node.set_value(output.value)
-            self.targets.set_value(target.value)
-            return self.loss
+            self.loss = self.loss_criterion.loss(self.targets, self.output_node)
 
 
 def plot_training_data(X_train, y_train, graph_plot):
@@ -47,7 +37,7 @@ def training_loop(X_train, y_train, linear_model, optim, loss_plot):
         linear_model.zero_grad()
         output = linear_model(X)
         loss = linear_model.calculate_loss(output, y)
-        backward(linear_model.context.nodes)
+        linear_model.backward()
         optim.step()
         loss_plot.register_datapoint(
             loss.value, f"{type(linear_model).__name__}-TensorOps"
@@ -84,6 +74,8 @@ if __name__ == "__main__":
     linear_model = LinearModel(
         MSELoss(),
     )
+
+    visualise_graph(linear_model.context.nodes)
 
     optim = SGD(linear_model.get_weights(), lr=1e-2)
 

@@ -1,10 +1,12 @@
 # Fits a polynomial (ax^2 + bx + c) to a single value and optimised using SGD() and using tensorops.loss.MSELoss as cost function
 # This example does not use the tensorops.Model class but uses tensorops.Node to construct a polynomial
 
+
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 from tensorops.loss import MSELoss
 from tensorops.tensorutils import PlotterUtil
 from tensorops.optim import SGD
+
 
 if __name__ == "__main__":
     with NodeContext() as context:

@@ -7,9 +7,9 @@ import torch.nn as nn
 import random
 
 
-class ActivationTest(nn.Module):
+class Activation(nn.Module):
     def __init__(self, num_inputs):
-        super(ActivationTest, self).__init__()
+        super(Activation, self).__init__()
         self.weights = nn.Parameter(
             torch.tensor([random.uniform(-1, 1) for _ in range(num_inputs)])
         )
@@ -23,7 +23,7 @@ class ActivationTest(nn.Module):
 if __name__ == "__main__":
     random.seed(42)
     num_inputs = 10
-    model = ActivationTest(num_inputs)
+    model = Activation(num_inputs)
     print(f"Weights: {model.weights.data},\nBias: {model.bias.data}")
 
     X = torch.tensor([random.uniform(-10, 10) for _ in range(num_inputs)])

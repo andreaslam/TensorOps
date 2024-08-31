@@ -2,6 +2,7 @@
 # There is random noise added to the resulting y value of the equation. This is to test the model's ability to adjust its weights for a line of best fit.
 # This code is to be used as comparison with examples/tensorops/noisyfitter.py
 
+
 import random
 from tqdm import tqdm
 import torch

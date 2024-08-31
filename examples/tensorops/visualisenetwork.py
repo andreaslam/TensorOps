@@ -3,13 +3,15 @@
 # The colour scheme of the nodes is as follows: salmon colour if the node is a neural network weight (m and c), pastel blue if the gradient is tracked and pastel green if the gradient is not tracked (such as the input and the output node).
 # The code does not include a sample input or the full code needed for training (but includes loss function computation).
 
+
 from tensorops.model import Model
-from tensorops.node import Node, forward
+from tensorops.node import Node
 from tensorops.tensorutils import visualise_graph
 from tensorops.loss import MSELoss
+from models.simplenet import SimpleModel
 
 
-class LinearModel(Model):
+class LinearModel(SimpleModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:
@@ -17,18 +19,6 @@ class LinearModel(Model):
             self.c = Node(0.3, requires_grad=True, weight=True)
             self.output_node = self.m * self.input_nodes + self.c
             self.loss = loss_criterion.loss(self.targets, self.output_node)
-
-    def forward(self, input_node):
-        with self.context:
-            self.input_nodes.set_value(input_node.value)
-            forward(self.context.nodes)
-            return self.output_node
-
-    def calculate_loss(self, output, target):
-        with self.context:
-            self.output_node.set_value(output.value)
-            self.targets.set_value(target.value)
-            return self.loss
 
 
 if __name__ == "__main__":

@@ -104,7 +104,7 @@ class Node:
         assert pickle_instance.writable()
 
         pickle.dump(self, pickle_instance)
-    
+
     @staticmethod
     def load(path, limit=None):
         """

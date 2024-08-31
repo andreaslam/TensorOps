@@ -2,6 +2,7 @@
 # The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
 # This code is to be used as comparison with examples/tensorops/bestfunction.py
 
+
 import torch
 import torch.nn as nn
 import torch.optim as optim

@@ -25,7 +25,9 @@ class Model(ABC):
         self.model_layers = []
         with self.context:
             self.input_nodes = Node(0.0, requires_grad=False)
+            self.output_nodes = Node(0.0, requires_grad=False)
             self.targets = Node(0.0, requires_grad=False)
+            self.loss = loss_criterion.loss(self.targets, self.output_nodes)
 
     @abstractmethod
     def forward(self, model_inputs):

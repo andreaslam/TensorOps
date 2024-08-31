@@ -1,15 +1,17 @@
 # Given three polynomial fitters constructed using the tensorops.Model base class and fits to the point (2,1).
 # The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
 
+
 from tensorops.tensorutils import PlotterUtil
 from tensorops.loss import MSELoss
 from tensorops.model import Model
 from tensorops.node import Node, backward, forward
 from tensorops.optim import Adam
 from tqdm import tqdm
+from models.simplenet import SimpleModel
 
 
-class LinearModel(Model):
+class LinearModel(SimpleModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:
@@ -18,19 +20,8 @@ class LinearModel(Model):
             self.output_node = self.m * self.input_nodes + self.c
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
-    def forward(self, input_node):
-        self.input_nodes.set_value(input_node.value)
-        forward(self.context.nodes)
-        return self.output_node
 
-    def calculate_loss(self, output, target):
-        with self.context:
-            self.output_node.set_value(output.value)
-            self.targets.set_value(target.value)
-            return self.loss
-
-
-class QuadraticModel(Model):
+class QuadraticModel(SimpleModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:
@@ -42,19 +33,8 @@ class QuadraticModel(Model):
             )
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
-    def forward(self, input_node):
-        self.input_nodes.set_value(input_node.value)
-        forward(self.context.nodes)
-        return self.output_node
 
-    def calculate_loss(self, output, target):
-        with self.context:
-            self.output_node.set_value(output.value)
-            self.targets.set_value(target.value)
-            return self.loss
-
-
-class CubicModel(Model):
+class CubicModel(SimpleModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:
@@ -70,17 +50,6 @@ class CubicModel(Model):
             )
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
-    def forward(self, input_node):
-        self.input_nodes.set_value(input_node.value)
-        forward(self.context.nodes)
-        return self.output_node
-
-    def calculate_loss(self, output, target):
-        with self.context:
-            self.output_node.set_value(output.value)
-            self.targets.set_value(target.value)
-            return self.loss
-
 
 def train_model(model, optim, num_iterations, loss_plot, results):
     for _ in tqdm(
@@ -89,7 +58,7 @@ def train_model(model, optim, num_iterations, loss_plot, results):
         model.zero_grad()
         output = model(Node(2.0, requires_grad=False))
         loss = model.calculate_loss(output, Node(1.0, requires_grad=False))
-        backward(model.context.nodes)
+        model.backward()
         optim.step()
         loss_plot.register_datapoint(loss.value, f"{type(model).__name__}-TensorOps")
     results[f"{type(model).__name__}-TensorOps"] = loss.value
