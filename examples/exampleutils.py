@@ -1,54 +1,66 @@
+import torch
 import torchvision
 import torchvision.transforms as transforms
-import torch
 from tensorops.node import Node
+import os
 
 
-def tensor_to_node(tensor, optional_open_handle):
+def tensor_to_node(tensor, optional_open_handle=None):
     """
-    Converts an n-dimensional `torch.Tensor` object to a corresponding n-dimensional `tensorops.Node`.
+    Convert an n-dimensional torch.Tensor to a corresponding n-dimensional tensorops.Node.
 
     Args:
-        tensor (torch.Tensor): An n-dimensional `torch.Tensor`
-        optional_open_handle (Optional[_io.TextIOWrapper]): An optional binary open handle with write access for saving the `tensorops.node.Node`.
-    Returns:
-        node: an n-dimensional list of `tensorops.node.Node`
-    """
-    tensor_list = tensor.tolist()
+        tensor (torch.Tensor): An n-dimensional torch.Tensor.
+        optional_open_handle (Optional[_io.TextIOWrapper], optional): An optional binary open handle with write access for saving the tensorops.node.Node. Defaults to None.
 
-    def recurse(data, optional_open_handle):
+    Returns:
+        tensorops.Node: An n-dimensional list of tensorops.node.Node.
+    """
+
+    def _recurse(data, handle):
         if isinstance(data, list):
-            return [recurse(sub, optional_open_handle) for sub in data]
-        data_in_node = Node(data, requires_grad=False)
-        data_in_node.save(optional_open_handle)
-        return data_in_node
+            return [_recurse(sub, handle) for sub in data]
+        node = Node(data, requires_grad=False)
+        if handle:
+            node.save(handle)
+        return node
 
-    return recurse(tensor_list, optional_open_handle)
+    return _recurse(tensor.tolist(), optional_open_handle)
 
 
-def prepare_mnist_dataset(num_samples_train, num_samples_test, tensorops_format=True):
+def save_nodes_from_pytorch(data, file_path, save):
     """
-    Downloads and processes the MNIST dataset.
+    Helper function to save nodes to a file if save is True.
 
     Args:
-        num_samples_train (int): The number of training samples to process.
-        num_samples_test (int): The number of test samples to process.
-        tensorops_format (bool, optional): If True, converts the dataset into a custom tensor operations format and saves it to files. Defaults to True.
+        data (pytorch.Tensor): PyTorch data to be processed
+        file_path (Optional[string]): Path to save processed data, if `save=True`.
+        save (bool): Whether to save the processed data.
+    Returns:
+        nodes (list[tensorops.nodeNode]): Processed `tensorops.nodeNode` corresponding to original PyTorch data.
+    """
+    handle = open(file_path, "ab+") if save else None
+    nodes = tensor_to_node(data, handle)
+    if handle:
+        handle.close()
+    return nodes
+
+
+def prepare_mnist_dataset(
+    num_samples_train, num_samples_test, tensorops_format=True, save=True
+):
+    """
+    Download and process the MNIST dataset.
+
+    Args:
+        num_samples_train (Union[int, Callable]): The number of training samples to process. Alternatively, pass in `len()` to sample the entire dataset.
+        num_samples_test (Union[int, Callable]): The number of test samples to process. Alternatively, pass in `len()` to sample the entire dataset.
+        tensorops_format (bool, optional): If True, convert the dataset into tensorops.node.Node(). Defaults to True.
+        save (bool, optional): If True, save the dataset to individual files to "data/MNIST/processed_node" or "data/MNIST/processed_pytorch" depending on tensorops_format. Defaults to True.
 
     Returns:
-        If `tensorops_format` is True:
-            train_data_nodes: Processed training data in node format.
-            train_labels_nodes: Processed training labels in node format.
-            test_data_nodes: Processed test data in node format.
-            test_labels_nodes: Processed test labels in node format.
-
-        If `tensorops_format` is False:
-            train_data: Training data as a reshaped tensor.
-            train_labels: Training labels as a reshaped tensor.
-            test_data: Test data as a reshaped tensor.
-            test_labels: Test labels as a reshaped tensor.
+        tuple: Processed data and labels in either node format or tensor format.
     """
-
     transform = transforms.Compose([transforms.ToTensor()])
 
     trainset = torchvision.datasets.MNIST(
@@ -65,27 +77,93 @@ def prepare_mnist_dataset(num_samples_train, num_samples_test, tensorops_format=
         testset, batch_size=len(testset), shuffle=False
     )
 
-    train_data, train_labels = next(
-        iter(trainloader)
-    )  # torch.Size([60000, 1, 28, 28]) torch.Size([60000])
-    test_data, test_labels = next(
-        iter(testloader)
-    )  # torch.Size([10000, 1, 28, 28]) torch.Size([10000])
+    train_data, train_labels = next(iter(trainloader))
+    test_data, test_labels = next(iter(testloader))
 
-    train_data, train_labels = train_data.reshape(
-        len(train_data), -1
-    ), train_labels.reshape(len(train_labels), -1)
-    test_data, test_labels = test_data.reshape(len(test_data), -1), test_labels.reshape(
-        len(test_labels), -1
+    num_samples_train, num_samples_test = process_data_count(
+        num_samples_train, num_samples_test, train_data, test_data
     )
 
-    print(
-        train_data.shape, train_labels.shape
-    )  # torch.Size([60000, 784]), torch.Size([60000, 1])
-    print(
-        test_data.shape, test_labels.shape
-    )  # torch.Size([10000, 784]), torch.Size([10000, 1])
+    verify_dataset(
+        num_samples_train,
+        num_samples_test,
+        train_data,
+        train_labels,
+        test_data,
+        test_labels,
+    )
 
+    print("Downloaded MNIST dataset.")
+
+    print(
+        f"Preparing to save {num_samples_train} training samples and {num_samples_test} test samples"
+    )
+
+    train_data = train_data.reshape(len(train_data), -1)[:num_samples_train]
+    train_labels = train_labels.reshape(len(train_labels), -1)[:num_samples_train]
+    test_data = test_data.reshape(len(test_data), -1)[:num_samples_test]
+    test_labels = test_labels.reshape(len(test_labels), -1)[:num_samples_test]
+
+    if tensorops_format:
+        print("Preparing dataset in TensorOps format")
+        os.makedirs("data/MNIST/processed_node/", exist_ok=True)
+        train_data_nodes = save_nodes_from_pytorch(
+            train_data, "data/MNIST/processed_node/train_data_nodes.pkl", save
+        )
+        train_labels_nodes = save_nodes_from_pytorch(
+            train_labels, "data/MNIST/processed_node/train_labels_nodes.pkl", save
+        )
+        test_data_nodes = save_nodes_from_pytorch(
+            test_data, "data/MNIST/processed_node/test_data_nodes.pkl", save
+        )
+        test_labels_nodes = save_nodes_from_pytorch(
+            test_labels, "data/MNIST/processed_node/test_labels_nodes.pkl", save
+        )
+        if save:
+            print("Saved tensorops data")
+        return train_data_nodes, train_labels_nodes, test_data_nodes, test_labels_nodes
+
+    print("Preparing dataset in PyTorch format")
+
+    if save:
+        os.makedirs("data/MNIST/processed_pytorch/", exist_ok=True)
+        torch.save(train_data, "data/MNIST/processed_pytorch/train_data.pt")
+        torch.save(train_labels, "data/MNIST/processed_pytorch/train_labels.pt")
+        torch.save(test_data, "data/MNIST/processed_pytorch/test_data.pt")
+        torch.save(test_labels, "data/MNIST/processed_pytorch/test_labels.pt")
+        print("Saved PyTorch data")
+
+    return train_data, train_labels, test_data, test_labels
+
+
+def process_data_count(num_samples_train, num_samples_test, train_data, test_data):
+    if num_samples_train is len:
+        num_samples_train = len(train_data)
+    elif isinstance(num_samples_train, int):
+        pass
+    else:
+        raise ValueError(
+            f"num_samples_train must be of type int or len(), got {type(num_samples_train)}"
+        )
+    if num_samples_test is len:
+        num_samples_test = len(test_data)
+    elif isinstance(num_samples_test, int):
+        pass
+    else:
+        raise ValueError(
+            f"num_samples_test must be of type int or len(), got {type(num_samples_test)}"
+        )
+    return num_samples_train, num_samples_test
+
+
+def verify_dataset(
+    num_samples_train,
+    num_samples_test,
+    train_data,
+    train_labels,
+    test_data,
+    test_labels,
+):
     assert len(train_data) == len(train_labels)
 
     assert len(test_data) == len(test_labels)
@@ -94,23 +172,6 @@ def prepare_mnist_dataset(num_samples_train, num_samples_test, tensorops_format=
 
     assert num_samples_test > 0 and num_samples_test <= len(test_data)
 
-    if tensorops_format:
-        handle = open("./data/MNIST/processed_node/train_data_nodes.pkl", "ab")
-        train_data_nodes = tensor_to_node(train_data[:num_samples_train], handle)
-
-        handle = open("./data/MNIST/processed_node/train_labels_nodes.pkl", "ab")
-        train_labels_nodes = tensor_to_node(train_labels[:num_samples_train], handle)
-
-        handle = open("./data/MNIST/processed_node/test_data_nodes.pkl", "ab")
-        test_data_nodes = tensor_to_node(test_data[:num_samples_test], handle)
-
-        handle = open("./data/MNIST/processed_node/test_labels_nodes.pkl", "ab")
-        test_labels_nodes = tensor_to_node(test_labels[:num_samples_test], handle)
-
-        return train_data_nodes, train_labels_nodes, test_data_nodes, test_labels_nodes
-
-    return train_data, train_labels, test_data, test_labels
-
 
 if __name__ == "__main__":
-    prepare_mnist_dataset(60000, 10000)
+    prepare_mnist_dataset(len, len)

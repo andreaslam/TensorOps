@@ -103,8 +103,7 @@ class Node:
 
         assert pickle_instance.writable()
 
-        with pickle_instance:
-            pickle.dump(self, pickle_instance)
+        pickle.dump(self, pickle_instance)
 
     def load(self, path):
         """
