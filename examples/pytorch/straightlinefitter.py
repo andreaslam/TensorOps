@@ -7,7 +7,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tensorops.tensorutils import PlotterUtil
+from tensorops.utils.tensorutils import PlotterUtil
 from tqdm import tqdm
 
 

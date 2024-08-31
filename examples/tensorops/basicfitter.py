@@ -4,7 +4,7 @@
 
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 from tensorops.loss import MSELoss
-from tensorops.tensorutils import PlotterUtil
+from tensorops.utils.tensorutils import PlotterUtil
 from tensorops.optim import SGD
 
 

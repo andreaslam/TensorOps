@@ -41,8 +41,11 @@ class L1Loss(Loss):
             assert len(actual) == len(
                 target
             ), "Actual and target lists must have the same length."
-            total_loss = sum(abs(a - t) for a, t in zip(actual, target))
-            return total_loss / len(actual)
+            total_loss = Node(0.0, requires_grad=False)
+            for actual_datapoint, target_datapoint in zip(actual, target):
+                total_loss += abs(actual_datapoint - target_datapoint)
+
+            return total_loss / Node(len(actual), requires_grad=False)
         else:
             return abs(actual - target)
 

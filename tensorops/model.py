@@ -144,7 +144,7 @@ class Layer:
     num_input_nodes (int): Number of neural network inputs in the layer.
     num_output_nodes (int): Number of neurones in the layer.
     activation_function (Optional[Callable]): Non-linear function that determines the activation level of the neurones in the layer based on its input.
-    layer_output (tensorops.node.Node): Outputs of neural activation from the layer.
+    layer_output (tensorops.model.Activation): Outputs of neural activation from the layer in the form of `tensorops.model.Activation`.
     """
 
     def __init__(
@@ -195,6 +195,7 @@ class Layer:
                 Node(random.uniform(-1, 1), requires_grad=True, weight=True)
                 for _ in range(self.num_output_nodes)
             ]
+
         self.layer_output = [
             Activation(
                 self.num_input_nodes,

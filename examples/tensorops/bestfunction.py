@@ -2,13 +2,13 @@
 # The code will train each model for 100 "epochs" and return the best performing fitter with its respective loss.
 
 
-from tensorops.tensorutils import PlotterUtil
+from tensorops.utils.tensorutils import PlotterUtil
 from tensorops.loss import MSELoss
 from tensorops.model import Model
 from tensorops.node import Node, backward, forward
 from tensorops.optim import Adam
 from tqdm import tqdm
-from models.simplenet import SimpleModel
+from tensorops.utils.models import SimpleModel
 
 
 class LinearModel(SimpleModel):

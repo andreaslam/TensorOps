@@ -4,7 +4,7 @@
 
 import torch
 import torch.optim as optim
-from tensorops.tensorutils import PlotterUtil
+from tensorops.utils.tensorutils import PlotterUtil
 
 
 if __name__ == "__main__":

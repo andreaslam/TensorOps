@@ -7,8 +7,8 @@ from tqdm import tqdm
 from tensorops.node import Node
 from tensorops.loss import MSELoss
 from tensorops.optim import SGD
-from tensorops.tensorutils import PlotterUtil, visualise_graph
-from models.simplenet import SimpleModel
+from tensorops.utils.tensorutils import PlotterUtil, visualise_graph
+from tensorops.utils.models import SimpleModel
 
 
 class LinearModel(SimpleModel):

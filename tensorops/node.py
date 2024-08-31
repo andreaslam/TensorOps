@@ -434,6 +434,30 @@ class Sigmoid(Node):
         self.node1.grad += self.grad * sigmoid_value * (1.0 - sigmoid_value)
 
 
+class LeakyReLU(Node):
+    def __init__(self, node1, leaky_grad=0.001):
+        super().__init__(0)
+        assert isinstance(
+            leaky_grad, (float, int)
+        ), "leaky_grad parameter can only be float or int"
+        self.node1 = node1
+        self.parents = [self.node1]
+        self.leaky_grad = leaky_grad
+        for parent in self.parents:
+            parent.children.append(self)
+
+    def compute(self):
+        self.value = max(0, self.node1.value) + self.leaky_grad * min(
+            0, self.node1.value
+        )
+
+    def get_grad(self):
+        if self.node1.value > 0:
+            self.node1.grad += self.grad * 1
+        elif self.node1.value < 0:
+            self.node1.grad += self.grad * self.leaky_grad
+
+
 def forward(nodes):
     for node in nodes:
         node.compute()
@@ -457,6 +481,10 @@ def sigmoid(node):
 
 def relu(node):
     return ReLU(node)
+
+
+def leaky_relu(node, leaky_grad):
+    return LeakyReLU(node, leaky_grad)
 
 
 def mean(items):
