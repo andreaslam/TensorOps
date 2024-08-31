@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 import random
+import pickle
 
 
 class Model(ABC):
@@ -100,11 +101,29 @@ class Model(ABC):
             return f"{type(self).__name__}(weights={[node for node in self.context.nodes if node.weight]})"
         return "[Warning]: no weights initialised yet"
 
-    def load(self, path):
-        pass
-
     def save(self, path):
-        pass
+        """
+        Saves the entire model, including layers, nodes, gradients, and optimiser states to a `.pkl` file.
+
+        Args:
+            path (str): The file path where the model should be saved.
+        """
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(path):
+        """
+        Loads a model from a `.pkl` file.
+
+        Args:
+            path (str): The file path from which to load the model.
+
+        Returns:
+            Model: The loaded model.
+        """
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
     def __len__(self):
         return len(self.context.nodes)

@@ -3,18 +3,31 @@ import torchvision.transforms as transforms
 import torch
 from tensorops.node import Node
 
-def tensor_to_node(tensor):
+
+def tensor_to_node(tensor, optional_open_handle):
+    """
+    Converts an n-dimensional `torch.Tensor` object to a corresponding n-dimensional `tensorops.Node`.
+
+    Args:
+        tensor (torch.Tensor): An n-dimensional `torch.Tensor`
+        optional_open_handle (Optional[_io.TextIOWrapper]): An optional binary open handle with write access for saving the `tensorops.node.Node`.
+    Returns:
+        node: an n-dimensional list of `tensorops.node.Node`
+    """
     tensor_list = tensor.tolist()
-    
-    def recurse(data):
+
+    def recurse(data, optional_open_handle):
         if isinstance(data, list):
-            return [recurse(sub) for sub in data]
-        return Node(data, requires_grad=False)
-    
-    return recurse(tensor_list)
+            return [recurse(sub, optional_open_handle) for sub in data]
+        data_in_node = Node(data, requires_grad=False)
+        data_in_node.save(optional_open_handle)
+        return data_in_node
+
+    return recurse(tensor_list, optional_open_handle)
 
 
 def prepare_mnist_dataset(num_samples_train, num_samples_test, tensorops_format=True):
+    """ """
     transform = transforms.Compose([transforms.ToTensor()])
 
     trainset = torchvision.datasets.MNIST(
@@ -53,22 +66,26 @@ def prepare_mnist_dataset(num_samples_train, num_samples_test, tensorops_format=
     )  # torch.Size([10000, 784]), torch.Size([10000, 1])
 
     assert len(train_data) == len(train_labels)
-    
+
     assert len(test_data) == len(test_labels)
 
     assert num_samples_train > 0 and num_samples_train <= len(train_data)
-    
+
     assert num_samples_test > 0 and num_samples_test <= len(test_data)
-    
+
     if tensorops_format:
-        train_data_nodes = tensor_to_node(train_data[:num_samples_train])
-        train_labels_nodes = tensor_to_node(train_labels[:num_samples_train])
-        test_data_nodes = tensor_to_node(test_data[:num_samples_test])
-        test_labels_nodes = tensor_to_node(test_labels[:num_samples_test])
+        handle = open("./data/MNIST/processed_node/train_data_nodes.pkl", "ab")
+        train_data_nodes = tensor_to_node(train_data[:num_samples_train], handle)
+        handle = open("./data/MNIST/processed_node/train_labels_nodes.pkl", "ab")
+        train_labels_nodes = tensor_to_node(train_labels[:num_samples_train], handle)
+        handle = open("./data/MNIST/processed_node/test_data_nodes.pkl", "ab")
+        test_data_nodes = tensor_to_node(test_data[:num_samples_test], handle)
+        handle = open("./data/MNIST/processed_node/test_labels_nodes.pkl", "ab")
+        test_labels_nodes = tensor_to_node(test_labels[:num_samples_test], handle)
         return train_data_nodes, train_labels_nodes, test_data_nodes, test_labels_nodes
 
     return train_data, train_labels, test_data, test_labels
 
 
 if __name__ == "__main__":
-    prepare_mnist_dataset(60000,10000)
+    prepare_mnist_dataset(60000, 10000)

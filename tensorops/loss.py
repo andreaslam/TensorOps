@@ -62,14 +62,12 @@ class MSELoss(Loss):
         Returns:
             float: The computed MSE loss value.
         """
-
         if isinstance(actual, list) and isinstance(target, list):
             assert len(actual) == len(
                 target
             ), "Actual and target lists must have the same length."
 
             total_loss = Node(0.0, requires_grad=False, weight=False)
-
             for actual_datapoint, target_datapoint in zip(actual, target):
                 total_loss = total_loss + (
                     (actual_datapoint - target_datapoint)

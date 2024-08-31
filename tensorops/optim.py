@@ -1,4 +1,5 @@
 import math
+import pickle
 
 
 class Optim:
@@ -9,6 +10,30 @@ class Optim:
 
     def step(self):
         pass
+
+    def save(self, path):
+        """
+        Saves the optimiser to a `.pkl` file.
+
+        Args:
+            path (str): The file path where the optimiser should be saved.
+        """
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(path):
+        """
+        Loads an optimiser from a `.pkl` file.
+
+        Args:
+            path (str): The file path from which to load the optimiser.
+
+        Returns:
+            Optim: The loaded optimiser.
+        """
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
 
 class Adam(Optim):

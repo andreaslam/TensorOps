@@ -1,4 +1,5 @@
 import math
+import pickle
 
 
 class Node:
@@ -90,6 +91,50 @@ class Node:
         if NodeContext.current_context:
             NodeContext.current_context.recompute()
 
+    def save(self, pickle_instance):
+        """
+        Saves a `tensorops.node.Node` to a `.pkl` file given a binary file `open()` handle.
+
+        Passing an instance of the file handle would allow for repeated insertion and saving `tensor.node.Node` to a `.pkl` file
+
+        Args:
+            pickle_instance (_io.TextIOWrapper): a `.pkl` file handle with write access in binary/
+        """
+
+        assert pickle_instance.writable()
+
+        with pickle_instance:
+            pickle.dump(self, pickle_instance)
+
+    def load(self, path):
+        """
+        Loads a single `tensorops.node.Node()` or a list[tensorops.node.Node()].
+
+        Args:
+            path (str): The file path from which to load the node(s).
+
+        Returns:
+            Union[tensorops.node.Node, list[tensorops.node.Node]]: The loaded node(s).
+        """
+
+        items = []
+
+        with open(path, "rb") as f:
+            while True:
+                try:
+                    data = pickle.load(f)
+                    items.append(data)
+                except EOFError:
+                    break
+
+        if len(items) == 1:
+            return items[0]
+
+        if all(isinstance(item, Node) for item in items):
+            return items
+        else:
+            raise ValueError("All items must be of type `tensorops.node.Node`.")
+
 
 class NodeContext:
 
@@ -145,6 +190,30 @@ class NodeContext:
 
     def __repr__(self) -> str:
         return str([node for node in self.nodes])
+
+    def save(self, path):
+        """
+        Saves the `tensorops.node.NodeContext()` to a `.pkl` file.
+
+        Args:
+            path (str): The file path where the `tensorops.node.NodeContext()` should be saved.
+        """
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(path):
+        """
+        Loads a `tensorops.node.NodeContext()` from a `.pkl` file.
+
+        Args:
+            path (str): The file path from which to load the `tensorops.node.NodeContext()`.
+
+        Returns:
+            tensorops.node.NodeContext(): The loaded context manager to track nodes.
+        """
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
 
 class Add(Node):
