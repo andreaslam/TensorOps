@@ -75,7 +75,6 @@ class MSELoss(Loss):
                     (actual_datapoint - target_datapoint)
                     ** Node(2, requires_grad=False, weight=False)
                 )
-
             return total_loss / Node(len(actual), requires_grad=False)
         else:
             return (target - actual) ** 2
