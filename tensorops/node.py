@@ -414,9 +414,10 @@ class Abs(Node):
         self.value = abs(self.node1.value)
 
     def get_grad(self):
-        if self.value != 0:
-            self.node1.grad += self.value / abs(self.value)
-
+        if self.node1.value > 0:
+            self.node1.grad += self.grad
+        elif self.node1.value < 0:
+            self.node1.grad += -self.grad
 
 class Sigmoid(Node):
     def __init__(self, node1):

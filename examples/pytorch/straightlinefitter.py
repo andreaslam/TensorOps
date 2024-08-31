@@ -22,7 +22,7 @@ class LinearModel(nn.Module):
 
 
 def train_model(model, optimiser, num_iterations, loss_plot):
-    criterion = nn.MSELoss()
+    criterion = nn.L1Loss()
     random.seed(42)
     for _ in tqdm(
         range(num_iterations), desc=f"Training {type(model).__name__}-PyTorch"
@@ -33,6 +33,7 @@ def train_model(model, optimiser, num_iterations, loss_plot):
         target_value = torch.tensor(1.0, requires_grad=False)
         output = model(input_value)
         loss = criterion(output, target_value)
+        print(loss)
         loss.backward()
         optimiser.step()
         loss_plot.register_datapoint(loss.item(), f"{type(model).__name__}-PyTorch")
