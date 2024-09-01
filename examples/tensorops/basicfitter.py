@@ -1,4 +1,4 @@
-# Fits a polynomial (ax^2 + bx + c) to a single value and optimised using SGD() and using tensorops.loss.MSELoss as cost function
+# Fit a polynomial (ax^2 + bx + c) to a single value and optimised using SGD() and using tensorops.loss.MSELoss as cost function
 # This example does not use the tensorops.Model class but uses tensorops.Node to construct a polynomial
 
 

@@ -17,7 +17,7 @@ class LinearModel(SimpleModel):
         with self.context:
             self.m = Node(0.7, requires_grad=True, weight=True)
             self.c = Node(0.3, requires_grad=True, weight=True)
-            self.output_node = self.m * self.input_nodes + self.c
+            self.output_node = self.m * self.input_node + self.c
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
 

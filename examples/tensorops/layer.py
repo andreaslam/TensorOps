@@ -5,19 +5,15 @@ from tensorops.model import Layer
 from tensorops.node import NodeContext, Node, sigmoid
 import random
 
+from tensorops.utils.tensorutils import visualise_graph
+
 
 def init_network_params(num_input_nodes, num_output_nodes):
     weights = [
-        [
-            Node(random.uniform(-1, 1), requires_grad=True, weight=True)
-            for _ in range(num_input_nodes)
-        ]
+        [random.uniform(-1, 1) for _ in range(num_input_nodes)]
         for _ in range(num_output_nodes)
     ]
-    bias = [
-        Node(random.uniform(-1, 1), requires_grad=True, weight=True)
-        for _ in range(num_output_nodes)
-    ]
+    bias = [random.uniform(-1, 1) for _ in range(num_output_nodes)]
 
     return weights, bias
 
@@ -44,3 +40,5 @@ if __name__ == "__main__":
 
     y = layer(X)
     print(f"outputs: {[output.value for output in y]}")
+
+    visualise_graph(layer.context.nodes)

@@ -35,7 +35,7 @@ class L1Loss(Loss):
             target (Union[float, List[float]]): The target output value(s).
 
         Returns:
-            float: The computed L1 loss value.
+            tensorops.node.Node(): The computed L1 loss value.
         """
         if isinstance(actual, list) and isinstance(target, list):
             assert len(actual) == len(
@@ -63,7 +63,7 @@ class MSELoss(Loss):
             target (Union[float, List[tensorops.node.Node]]): The target output value(s).
 
         Returns:
-            float: The computed MSE loss value.
+            tensorops.node.Node(): The computed MSE loss value.
         """
         if isinstance(actual, list) and isinstance(target, list):
             assert len(actual) == len(
@@ -72,10 +72,9 @@ class MSELoss(Loss):
 
             total_loss = Node(0.0, requires_grad=False, weight=False)
             for actual_datapoint, target_datapoint in zip(actual, target):
-                total_loss = total_loss + (
-                    (actual_datapoint - target_datapoint)
-                    ** Node(2, requires_grad=False, weight=False)
-                )
-            return total_loss / Node(len(actual), requires_grad=False)
+                total_loss = total_loss + ((actual_datapoint - target_datapoint) ** 2)
+
+            loss = total_loss / Node(len(actual), requires_grad=False, weight=False)
+            return loss
         else:
             return (target - actual) ** 2
