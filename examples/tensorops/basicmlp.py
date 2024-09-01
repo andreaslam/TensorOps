@@ -6,7 +6,7 @@ from tensorops.loss import MSELoss
 from tensorops.model import Model
 from tensorops.node import Node, sigmoid
 from tensorops.optim import SGD
-from tensorops.utils.tensorutils import PlotterUtil
+from tensorops.utils.tensorutils import PlotterUtil, visualise_graph
 import random
 
 

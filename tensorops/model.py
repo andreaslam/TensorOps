@@ -40,6 +40,9 @@ class Model(ABC):
         """
         assert self.input_layer
         assert self.output_layer
+        for model_input_nodes, x in zip(self.input_layer.input_nodes, model_inputs):
+            model_input_nodes.set_value(x.value)
+        model_inputs = self.input_layer.input_nodes
         for layer in self.model_layers:
             model_inputs = layer(model_inputs)
         return self.output_layer.layer_output_nodes
@@ -57,7 +60,7 @@ class Model(ABC):
         for model_target_nodes, training_target, model_output_nodes, output in zip(
             self.targets, target, self.output_layer.layer_output_nodes, output
         ):
-            model_output_nodes.set_value(output)
+            model_output_nodes.set_value(output.value)
             model_target_nodes.set_value(training_target.value)
         return self.loss
 
@@ -242,12 +245,7 @@ class Layer:
         for node, forward_input in zip(self.input_nodes, forward_inputs):
             node.set_value(forward_input.value)
 
-        # self.layer_output_nodes = [
-        #     activation(self.input_nodes) for activation in self.layer_output
-        # ]
-
         return [activation(self.input_nodes) for activation in self.layer_output]
-        # return self.layer_output_nodes
 
     def __repr__(self):
         return f"""

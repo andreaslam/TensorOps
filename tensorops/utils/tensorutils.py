@@ -97,8 +97,8 @@ def visualise_graph(nodes):
     labels = {}
     for node in nodes:
         node_id = id(node)
-        if node.value and node.grad:
-            node_label = f"{type(node).__name__}\nVal: {round(node.value, 2)}\nGrad: {round(node.grad, 2)}"
+        if node.value is not None and node.grad is not None:
+            node_label = f"{type(node).__name__}\nVal: {round(node.value, 3)}\nGrad: {round(node.grad, 3)}"
         else:
             node_label = f"{type(node).__name__}\nVal: {node.value}\nGrad: {node.grad}"
         labels[node_id] = node_label
@@ -107,7 +107,7 @@ def visualise_graph(nodes):
             parent_id = id(parent)
             G.add_edge(parent_id, node_id)
 
-    pos = nx.planar_layout(G)
+    pos = nx.spring_layout(G, seed=42)
     colourmap = [
         "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
         for (_, node) in zip(G, nodes)

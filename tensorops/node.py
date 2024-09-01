@@ -84,7 +84,8 @@ class Node:
         self.grad = seed
 
     def set_value(self, new_value):
-        self.value = new_value
+        assert isinstance(new_value, (float, int))
+        self.value = float(new_value)
         self.trigger_recompute()
 
     def trigger_recompute(self):
