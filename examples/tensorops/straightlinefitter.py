@@ -4,11 +4,11 @@
 
 import random
 from tensorops.utils.tensorutils import PlotterUtil
-from tensorops.loss import L1Loss
+from tensorops.loss import MSELoss
 from tensorops.node import Node
 from tensorops.optim import Adam
 from tqdm import tqdm
-from tensorops.utils.models import SimpleModel
+from helpers import SimpleModel
 
 
 class LinearModel(SimpleModel):
@@ -31,7 +31,6 @@ def train_model(model, optim, num_iterations, loss_plot):
         loss = model.calculate_loss(
             output, Node(1.0, requires_grad=False, weight=False)
         )
-        print(loss)
         model.backward()
         optim.step()
         loss_plot.register_datapoint(loss.value, f"{type(model).__name__}-TensorOps")
@@ -40,7 +39,7 @@ def train_model(model, optim, num_iterations, loss_plot):
 
 
 if __name__ == "__main__":
-    loss_criterion = L1Loss()
+    loss_criterion = MSELoss()
     model = LinearModel(loss_criterion)
     loss_plot = PlotterUtil()
     optim = Adam(model.get_weights(), lr=5e-2)

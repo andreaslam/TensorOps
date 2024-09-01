@@ -8,7 +8,7 @@ from tensorops.model import Model
 from tensorops.node import Node, backward, forward
 from tensorops.optim import Adam
 from tqdm import tqdm
-from tensorops.utils.models import SimpleModel
+from helpers import SimpleModel
 
 
 class LinearModel(SimpleModel):

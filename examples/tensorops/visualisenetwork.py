@@ -8,7 +8,7 @@ from tensorops.model import Model
 from tensorops.node import Node
 from tensorops.utils.tensorutils import visualise_graph
 from tensorops.loss import MSELoss
-from tensorops.utils.models import SimpleModel
+from helpers import SimpleModel
 
 
 class LinearModel(SimpleModel):
