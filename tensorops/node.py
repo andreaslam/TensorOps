@@ -49,7 +49,7 @@ class Node:
         return Abs(self)
 
     def __repr__(self):
-        if not self.value:
+        if self.value == None:
             return f"{type(self).__name__}(value=None, grad={self.grad:.5f}, weight={self.weight})"
         return f"{type(self).__name__}(value={self.value:.5f}, grad={self.grad:.5f}, weight={self.weight})"
 
@@ -418,6 +418,7 @@ class Abs(Node):
             self.node1.grad += self.grad
         elif self.node1.value < 0:
             self.node1.grad += -self.grad
+
 
 class Sigmoid(Node):
     def __init__(self, node1):
