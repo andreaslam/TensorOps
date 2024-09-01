@@ -5,6 +5,7 @@
 import torch
 import torch.nn as nn
 import random
+from helpers import init_network_params
 
 
 class Layer(nn.Module):
@@ -18,20 +19,6 @@ class Layer(nn.Module):
         return self.activation_function(x)
 
 
-def init_network_params(num_input_nodes, num_output_nodes, layer):
-    layer.linear.weight = nn.Parameter(
-        torch.tensor(
-            [
-                [random.uniform(-1, 1) for _ in range(num_input_nodes)]
-                for _ in range(num_output_nodes)
-            ]
-        )
-    )
-    layer.linear.bias = nn.Parameter(
-        torch.tensor([random.uniform(-1, 1) for _ in range(num_output_nodes)])
-    )
-
-
 if __name__ == "__main__":
     random.seed(42)
 
@@ -40,7 +27,7 @@ if __name__ == "__main__":
 
     layer = Layer(num_input_nodes, num_output_nodes, torch.sigmoid)
 
-    init_network_params(num_input_nodes, num_output_nodes, layer)
+    init_network_params(layer.linear)
 
     print("Layer weights:", layer.linear.weight)
     print("Layer biases:", layer.linear.bias)
