@@ -4,7 +4,6 @@
 # The code does not include a sample input or the full code needed for training (but includes loss function computation).
 
 
-from tensorops.model import Model
 from tensorops.node import Node
 from tensorops.utils.tensorutils import visualise_graph
 from tensorops.loss import MSELoss

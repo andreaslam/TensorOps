@@ -50,8 +50,8 @@ class Node:
 
     def __repr__(self):
         if self.value == None:
-            return f"{type(self).__name__}(value=None, grad={self.grad:.5f}, weight={self.weight})"
-        return f"{type(self).__name__}(value={self.value:.5f}, grad={self.grad:.5f}, weight={self.weight})"
+            return f"{type(self).__name__}(value=None, grad={self.grad:.4f}, weight={self.weight})"
+        return f"{type(self).__name__}(value={self.value:.4f}, grad={self.grad:.4f}, weight={self.weight})"
 
     def sin(self):
         return Sin(self)

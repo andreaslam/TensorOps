@@ -4,6 +4,7 @@ import torchvision
 import torchvision.transforms as transforms
 from tensorops.node import Node
 
+
 def tensor_to_node(tensor, optional_open_handle=None):
     """
     Convert an n-dimensional torch.Tensor to a corresponding n-dimensional tensorops.Node.

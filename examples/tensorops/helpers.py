@@ -34,6 +34,3 @@ class SimpleModel(Model):
         if [node for node in self.context.nodes if node.weight]:
             return f"{type(self).__name__}(weights={[node for node in self.context.nodes if node.weight]})"
         return "[Warning]: no weights initialised yet"
-
-    def __len__(self):
-        return len(self.context.nodes)

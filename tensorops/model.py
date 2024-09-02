@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 import random
 import pickle
@@ -21,12 +21,14 @@ class Model(ABC):
 
     def __init__(self, loss_criterion, seed=None):
         self.context = NodeContext()
-        self.loss_criterion = loss_criterion
         self.model_layers = []
         self.targets = []
         self.input_layer = None
         self.output_layer = None
         self.seed = seed
+        self.loss = None
+        with self.context:
+            self.loss_criterion = loss_criterion
 
     def forward(self, model_inputs):
         """
@@ -40,12 +42,13 @@ class Model(ABC):
         """
         assert self.input_layer
         assert self.output_layer
-        for model_input_nodes, x in zip(self.input_layer.input_nodes, model_inputs):
-            model_input_nodes.set_value(x.value)
-        model_inputs = self.input_layer.input_nodes
-        for layer in self.model_layers:
-            model_inputs = layer(model_inputs)
-        return self.output_layer.layer_output_nodes
+        with self.context:
+            for model_input_nodes, x in zip(self.input_layer.input_nodes, model_inputs):
+                model_input_nodes.set_value(x.value)
+            model_inputs = self.input_layer.input_nodes
+            for layer in self.model_layers:
+                model_inputs = layer(model_inputs)
+            return self.output_layer.layer_output_nodes
 
     def calculate_loss(self, output, target):
         """
@@ -57,11 +60,12 @@ class Model(ABC):
         Returns:
             Model.loss (tensorops.Node): The resulting node as an output from the calculations of the neural network.
         """
-        for model_target_nodes, training_target, model_output_nodes, output in zip(
-            self.targets, target, self.output_layer.layer_output_nodes, output
-        ):
-            model_output_nodes.set_value(output.value)
-            model_target_nodes.set_value(training_target.value)
+        with self.context:
+            for model_target_nodes, training_target, model_output_nodes, output in zip(
+                self.targets, target, self.output_layer.layer_output_nodes, output
+            ):
+                model_output_nodes.set_value(output.value)
+                model_target_nodes.set_value(training_target.value)
         return self.loss
 
     def add_layer(self, num_input_nodes, num_output_nodes, activation_function):
@@ -122,9 +126,6 @@ class Model(ABC):
     def __repr__(self):
         if self.model_layers:
             return f"{type(self).__name__}({[layer for layer in self.model_layers]})"
-
-        # if [node for node in self.context.nodes if node.weight]:
-        #     return f"{type(self).__name__}(weights={[node for node in self.context.nodes if node.weight]})"
         return "[Warning]: no weights initialised yet"
 
     def save(self, path):

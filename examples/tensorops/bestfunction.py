@@ -4,8 +4,7 @@
 
 from tensorops.utils.tensorutils import PlotterUtil
 from tensorops.loss import MSELoss
-from tensorops.model import Model
-from tensorops.node import Node, backward, forward
+from tensorops.node import Node
 from tensorops.optim import Adam
 from tqdm import tqdm
 from helpers import SimpleModel
