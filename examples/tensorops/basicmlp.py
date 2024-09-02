@@ -40,8 +40,9 @@ def training_loop(X, y, mlp, optim, loss_plot, num_epochs):
         mlp.zero_grad()
         outputs = mlp(X)
         loss = mlp.calculate_loss(outputs, y)
-        loss_plot.register_datapoint(loss.value, f"{type(mlp).__name__}-TensorOps")
+        print(outputs, y, loss)
         mlp.backward()
+        loss_plot.register_datapoint(loss.value, f"{type(mlp).__name__}-TensorOps")
         optim.step()
 
 
@@ -49,18 +50,18 @@ if __name__ == "__main__":
     random.seed(42)
 
     num_epochs = 100
-    num_input_nodes = 2
-    num_hidden_nodes = 12
-    num_hidden_layers = 3
-    num_output_nodes = 2
+    num_input_nodes = 1
+    num_hidden_nodes = 1
+    num_hidden_layers = 1
+    num_output_nodes = 1
 
     X = [
         Node(random.uniform(-2, 2), requires_grad=False) for _ in range(num_input_nodes)
     ]
     y = [
-        Node(random.uniform(-2, 2), requires_grad=False)
-        for _ in range(num_output_nodes)
+        Node(random.uniform(0, 1), requires_grad=False) for _ in range(num_output_nodes)
     ]
+
     model = MLP(
         MSELoss(),
         num_input_nodes,
@@ -69,6 +70,7 @@ if __name__ == "__main__":
         num_hidden_nodes,
         sigmoid,
     )
+    print(model)
     optim = SGD(model.get_weights(), lr=1e-1)
 
     loss_plot = PlotterUtil()

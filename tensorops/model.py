@@ -23,10 +23,12 @@ class Model(ABC):
         self.context = NodeContext()
         self.model_layers = []
         self.targets = []
+        self.weights = []
         self.input_layer = None
         self.output_layer = None
         self.seed = seed
         self.loss = None
+        self._prev_layer = None
         with self.context:
             self.loss_criterion = loss_criterion
 
@@ -35,20 +37,19 @@ class Model(ABC):
         Executes a forward pass of the neural network given input.
 
         Args:
-            model_inputs (tensorops.Node): The input for the neural network.
+            model_inputs (list[tensorops.Node]): The input for the neural network.
 
         Returns:
-            output_node (tensorops.Node): The resulting node as an output from the calculations of the neural network.
+            output_node (list[tensorops.Node]): The resulting nodes as output from the calculations of the neural network.
         """
         assert self.input_layer
         assert self.output_layer
+        assert len(model_inputs) == len(self.input_layer.input_nodes)
         with self.context:
-            for model_input_nodes, x in zip(self.input_layer.input_nodes, model_inputs):
-                model_input_nodes.set_value(x.value)
-            model_inputs = self.input_layer.input_nodes
             for layer in self.model_layers:
                 model_inputs = layer(model_inputs)
-            return self.output_layer.layer_output_nodes
+
+        return model_inputs
 
     def calculate_loss(self, output, target):
         """
@@ -61,10 +62,10 @@ class Model(ABC):
             Model.loss (tensorops.Node): The resulting node as an output from the calculations of the neural network.
         """
         with self.context:
-            for model_target_nodes, training_target, model_output_nodes, output in zip(
+            for model_target_nodes, training_target, model_output_nodes, y in zip(
                 self.targets, target, self.output_layer.layer_output_nodes, output
             ):
-                model_output_nodes.set_value(output.value)
+                model_output_nodes.set_value(y.value)
                 model_target_nodes.set_value(training_target.value)
         return self.loss
 
@@ -79,7 +80,9 @@ class Model(ABC):
             num_output_nodes,
             activation_function,
             seed=self.seed,
+            input_nodes=self._prev_layer
         )
+        self._prev_layer = new_layer.layer_output_nodes
         if not self.input_layer:
             self.input_layer = new_layer
         self.model_layers.append(new_layer)
@@ -89,6 +92,21 @@ class Model(ABC):
             Node(0.0, requires_grad=False)
             for _ in range(self.output_layer.num_output_nodes)
         ]
+        self.weights = self.get_weights()
+
+    def eval(self):
+        """
+        Disables weight tracking in `tensorops.Model`.
+        """
+        for weight in self.weights:
+            weight.requires_grad = False
+
+    def train(self):
+        """
+        Enables weight tracking in `tensorops.Model`.
+        """
+        for weight in self.weights:
+            weight.requires_grad = True
 
     def backward(self):
         """
@@ -182,16 +200,20 @@ class Layer:
         output_weights=None,
         output_bias=None,
         seed=None,
+        input_nodes=None
     ):
         self.seed = seed
         if self.seed:
             random.seed(self.seed)
         self.context = context
         self.num_input_nodes = num_input_nodes
-        self.input_nodes = [
-            Node(0.0, requires_grad=False, weight=False)
-            for _ in range(self.num_input_nodes)
-        ]
+        if input_nodes:
+            self.input_nodes = input_nodes
+        else:
+            self.input_nodes = [
+                Node(0.0, requires_grad=False, weight=False)
+                for _ in range(self.num_input_nodes)
+            ]
         self.num_output_nodes = num_output_nodes
         self.activation_function = activation_function
 

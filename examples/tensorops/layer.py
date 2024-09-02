@@ -50,10 +50,10 @@ class LayerTest(Layer):
 
     def calculate_loss(self, output, target):
         with self.context:
-            for layer_target_nodes, training_target, layer_output_nodes, output in zip(
+            for layer_target_nodes, training_target, layer_output_nodes, y in zip(
                 self.targets, target, self.layer_output_nodes, output
             ):
-                layer_output_nodes.set_value(output.value)
+                layer_output_nodes.set_value(y.value)
                 layer_target_nodes.set_value(training_target.value)
         return self.loss
 

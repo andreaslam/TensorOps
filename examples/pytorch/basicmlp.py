@@ -49,8 +49,9 @@ def training_loop(X, y, mlp, optim, loss_criterion, loss_plot, num_epochs):
         optim.zero_grad()
         outputs = mlp(X)
         loss = loss_criterion(outputs, y)
-        loss_plot.register_datapoint(loss.item(), f"{type(mlp).__name__}-PyTorch")
+        print(outputs, y, loss)
         loss.backward()
+        loss_plot.register_datapoint(loss.item(), f"{type(mlp).__name__}-PyTorch")
         optim.step()
 
 
@@ -58,17 +59,13 @@ if __name__ == "__main__":
     random.seed(42)
 
     num_epochs = 100
-    num_input_nodes = 2
-    num_hidden_nodes = 12
-    num_hidden_layers = 3
-    num_output_nodes = 2
+    num_input_nodes = 1
+    num_hidden_nodes = 1
+    num_hidden_layers = 1
+    num_output_nodes = 1
 
-    X = torch.tensor(
-        [[random.uniform(-2, 2) for _ in range(num_input_nodes)]], dtype=torch.float32
-    )
-    y = torch.tensor(
-        [[random.uniform(-2, 2) for _ in range(num_output_nodes)]], dtype=torch.float32
-    )
+    X = torch.tensor([[random.uniform(-2, 2) for _ in range(num_input_nodes)]])
+    y = torch.tensor([[random.uniform(0, 1) for _ in range(num_output_nodes)]])
     model = MLP(
         num_input_nodes,
         num_output_nodes,
@@ -78,10 +75,10 @@ if __name__ == "__main__":
     )
 
     loss_criterion = nn.MSELoss()
-    optimizer = optim.SGD(model.parameters(), lr=1e-1)
+    optimiser = optim.SGD(model.parameters(), lr=1e-1)
 
     loss_plot = PlotterUtil()
 
-    training_loop(X, y, model, optimizer, loss_criterion, loss_plot, num_epochs)
+    training_loop(X, y, model, optimiser, loss_criterion, loss_plot, num_epochs)
 
     loss_plot.plot()
