@@ -355,6 +355,10 @@ class Tanh(Node):
         self.node1.grad += self.grad * (1 - (math.tanh(self.node1.value) ** 2))
 
 
+def tanh(node):
+    return Tanh(node)
+
+
 class ReLU(Node):
     def __init__(self, node1):
         super().__init__(0)
@@ -371,6 +375,59 @@ class ReLU(Node):
             self.node1.grad += self.grad * 1
         elif self.node1.value < 0:
             self.node1.grad += self.grad * 0
+
+
+def relu(node):
+    return ReLU(node)
+
+
+class LeakyReLU(Node):
+    def __init__(self, node1, leaky_grad=0.001):
+        super().__init__(0)
+        assert isinstance(
+            leaky_grad, (float, int)
+        ), "leaky_grad parameter can only be float or int"
+        self.node1 = node1
+        self.parents = [self.node1]
+        self.leaky_grad = leaky_grad
+        for parent in self.parents:
+            parent.children.append(self)
+
+    def compute(self):
+        self.value = max(0, self.node1.value) + self.leaky_grad * min(
+            0, self.node1.value
+        )
+
+    def get_grad(self):
+        if self.node1.value > 0:
+            self.node1.grad += self.grad * 1
+        elif self.node1.value < 0:
+            self.node1.grad += self.grad * self.leaky_grad
+
+
+def leaky_relu(node, leaky_grad=0.001):
+    return LeakyReLU(node, leaky_grad)
+
+
+class Ramp(Node):
+    def __init__(self, node1):
+        super().__init__(0)
+        self.node1 = node1
+        self.parents = [self.node1]
+        for parent in self.parents:
+            parent.children.append(self)
+
+    def compute(self):
+        self.value = math.log(1 + math.exp(-abs(self.node1.value))) + max(
+            self.node1.value, 0
+        )
+
+    def get_grad(self):
+        self.node1.grad += self.grad * (1.0 / (1.0 + math.exp(-self.node1.value)))
+
+
+def ramp(node):
+    return Ramp(node)
 
 
 class Negate(Node):
@@ -401,6 +458,10 @@ class Exp(Node):
 
     def get_grad(self):
         self.node1.grad += self.grad * self.value
+
+
+def exp(node):
+    return Exp(node)
 
 
 class Abs(Node):
@@ -437,28 +498,8 @@ class Sigmoid(Node):
         self.node1.grad += self.grad * sigmoid_value * (1.0 - sigmoid_value)
 
 
-class LeakyReLU(Node):
-    def __init__(self, node1, leaky_grad=0.001):
-        super().__init__(0)
-        assert isinstance(
-            leaky_grad, (float, int)
-        ), "leaky_grad parameter can only be float or int"
-        self.node1 = node1
-        self.parents = [self.node1]
-        self.leaky_grad = leaky_grad
-        for parent in self.parents:
-            parent.children.append(self)
-
-    def compute(self):
-        self.value = max(0, self.node1.value) + self.leaky_grad * min(
-            0, self.node1.value
-        )
-
-    def get_grad(self):
-        if self.node1.value > 0:
-            self.node1.grad += self.grad * 1
-        elif self.node1.value < 0:
-            self.node1.grad += self.grad * self.leaky_grad
+def sigmoid(node):
+    return Sigmoid(node)
 
 
 def forward(nodes):
@@ -476,22 +517,3 @@ def backward(nodes):
 def zero_grad(nodes):
     for node in nodes:
         node.zero_grad()
-
-
-def sigmoid(node):
-    return Sigmoid(node)
-
-
-def relu(node):
-    return ReLU(node)
-
-
-def leaky_relu(node, leaky_grad):
-    return LeakyReLU(node, leaky_grad)
-
-
-def mean(items):
-    total = Node(0.0, requires_grad=False, weight=False)
-    for i in items:
-        total += i
-    return total / Node(len(items), requires_grad=False, weight=False)

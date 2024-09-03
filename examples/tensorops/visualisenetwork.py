@@ -7,10 +7,10 @@
 from tensorops.node import Node
 from tensorops.utils.tensorutils import visualise_graph
 from tensorops.loss import MSELoss
-from helpers import SimpleModel
+from helpers import SimpleSequentialModel
 
 
-class LinearModel(SimpleModel):
+class LinearModel(SimpleSequentialModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:

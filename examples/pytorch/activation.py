@@ -47,7 +47,6 @@ if __name__ == "__main__":
         for X, y in zip(X_train, y_train):
             activation.zero_grad()
             y_preds = activation(X)
-            print("Output:", y_preds.item())
             loss = loss_criterion(y_preds, y)
             loss.backward()
             optimiser.step()

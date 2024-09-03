@@ -22,9 +22,9 @@ class TestActivation(Activation):
         loss_criterion=MSELoss(),
     ):
         super().__init__(
+            context,
             num_input_nodes,
             activation_function,
-            context,
             weights,
             bias,
             seed,
@@ -53,6 +53,7 @@ if __name__ == "__main__":
 
     weights = [random.uniform(-1, 1) for _ in range(num_inputs)]
     bias = random.uniform(-1, 1)
+    print(f"Weights: {weights},\nBias: {bias}")
 
     X_train = [
         [
@@ -64,7 +65,6 @@ if __name__ == "__main__":
     y_train = [Node(0.0, requires_grad=False) for _ in range(num_data)]
 
     activation = TestActivation(num_inputs, sigmoid, NodeContext(), weights, bias)
-    print(f"Weights: {activation.weights},\nBias: {activation.bias}")
 
     optim = SGD(activation.context.weights_enabled(), lr=1e-1)
 
@@ -74,7 +74,6 @@ if __name__ == "__main__":
         for X, y in zip(X_train, y_train):
             zero_grad(activation.context.nodes)
             y_preds = activation(X)
-            print("Output:", y_preds.value)
             loss = activation.calculate_loss(y_preds, y)
             backward(activation.context.nodes)
             optim.step()

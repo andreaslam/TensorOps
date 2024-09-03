@@ -7,10 +7,10 @@ from tensorops.loss import MSELoss
 from tensorops.node import Node
 from tensorops.optim import Adam
 from tqdm import tqdm
-from helpers import SimpleModel
+from helpers import SimpleSequentialModel
 
 
-class LinearModel(SimpleModel):
+class LinearModel(SimpleSequentialModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:
@@ -20,7 +20,7 @@ class LinearModel(SimpleModel):
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
 
-class QuadraticModel(SimpleModel):
+class QuadraticModel(SimpleSequentialModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:
@@ -33,7 +33,7 @@ class QuadraticModel(SimpleModel):
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
 
-class CubicModel(SimpleModel):
+class CubicModel(SimpleSequentialModel):
     def __init__(self, loss_criterion):
         super().__init__(loss_criterion)
         with self.context:

@@ -6,7 +6,7 @@ from tensorops.loss import MSELoss
 from tensorops.model import Model
 from tensorops.node import Node, sigmoid
 from tensorops.optim import SGD
-from tensorops.utils.tensorutils import PlotterUtil, visualise_graph
+from tensorops.utils.tensorutils import PlotterUtil
 import random
 
 
@@ -36,11 +36,10 @@ class MLP(Model):
 
 
 def training_loop(X, y, mlp, optim, loss_plot, num_epochs):
-    for _ in tqdm(range(num_epochs), desc="Training network"):
+    for _ in tqdm(range(num_epochs), desc="Training MLP"):
         mlp.zero_grad()
         outputs = mlp(X)
         loss = mlp.calculate_loss(outputs, y)
-        print(outputs, y, loss)
         mlp.backward()
         loss_plot.register_datapoint(loss.value, f"{type(mlp).__name__}-TensorOps")
         optim.step()
@@ -50,9 +49,9 @@ if __name__ == "__main__":
     random.seed(42)
 
     num_epochs = 100
-    num_input_nodes = 1
-    num_hidden_nodes = 1
-    num_hidden_layers = 1
+    num_input_nodes = 2
+    num_hidden_nodes = 8
+    num_hidden_layers = 10
     num_output_nodes = 1
 
     X = [
@@ -70,7 +69,7 @@ if __name__ == "__main__":
         num_hidden_nodes,
         sigmoid,
     )
-    print(model)
+
     optim = SGD(model.get_weights(), lr=1e-1)
 
     loss_plot = PlotterUtil()

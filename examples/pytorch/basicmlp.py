@@ -2,7 +2,7 @@
 
 # Note that the weights are configured manually using the `init_network_params`, which uses the `random` library to generate seeded weights.
 # This is because `torch.manual_seed` works differently than `random.seed()` and for reproducibility for the `tensorops` version the code will be using `random`.
-# This code is to be used as comparison with examples/tensorops/mlp.py
+# This code is to be used as comparison with examples/tensorops/basicmlp.py
 
 
 from tqdm import tqdm
@@ -45,11 +45,10 @@ class MLP(nn.Module):
 
 
 def training_loop(X, y, mlp, optim, loss_criterion, loss_plot, num_epochs):
-    for _ in tqdm(range(num_epochs), desc="Training network"):
+    for _ in tqdm(range(num_epochs), desc="Training MLP"):
         optim.zero_grad()
         outputs = mlp(X)
         loss = loss_criterion(outputs, y)
-        print(outputs, y, loss)
         loss.backward()
         loss_plot.register_datapoint(loss.item(), f"{type(mlp).__name__}-PyTorch")
         optim.step()
@@ -59,13 +58,14 @@ if __name__ == "__main__":
     random.seed(42)
 
     num_epochs = 100
-    num_input_nodes = 1
-    num_hidden_nodes = 1
-    num_hidden_layers = 1
+    num_input_nodes = 2
+    num_hidden_nodes = 8
+    num_hidden_layers = 10
     num_output_nodes = 1
 
     X = torch.tensor([[random.uniform(-2, 2) for _ in range(num_input_nodes)]])
     y = torch.tensor([[random.uniform(0, 1) for _ in range(num_output_nodes)]])
+
     model = MLP(
         num_input_nodes,
         num_output_nodes,

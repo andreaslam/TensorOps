@@ -27,9 +27,9 @@ class LayerTest(Layer):
         num_input_nodes,
         num_output_nodes,
         activation_function,
+        seed=None,
         output_weights=None,
         output_bias=None,
-        seed=None,
         loss_criterion=MSELoss(),
     ):
         super().__init__(
@@ -95,7 +95,6 @@ if __name__ == "__main__":
         for X, y in zip(X_train, y_train):
             zero_grad(layer.context.nodes)
             y_preds = layer(X)
-            print(y_preds)
             loss = layer.calculate_loss(y_preds, y)
             backward(layer.context.nodes)
             optim.step()

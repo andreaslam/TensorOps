@@ -1,10 +1,9 @@
-from abc import ABC
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 import random
 import pickle
 
 
-class Model(ABC):
+class Model:
     """
     `tensorops.model.Model` is the abstract base class for a neural network.
 
@@ -12,11 +11,17 @@ class Model(ABC):
 
     Attributes
     ----------
-    context (tensorops.NodeContext): Context manager to keep track and store nodes for forward and backward pass as a computational graph.
-    loss_criterion (tensorops.Loss): Cost function of the neural network
-    input_nodes (tensorops.Node): Inputs for the model.
-    targets (tensorops.Node): Targets for the model.
+    loss_criterion (tensorops.loss.Loss): Cost function of the neural network.
+    context (tensorops.node.NodeContext): Context manager to keep track and store nodes for forward and backward pass as a computational graph.
+    model_layers (list[tensorops.model.Layers]): A list containing the all the layers of the neural network.
+    targets (tensorops.node.Node): Targets for the model.
+    weights (list[tensorops.node.Node]): Contains all the weights of the neural network.
+    input_layer (Union[list[tensorops.model.Layer], None]): The input layer of the neural network. Returns `None` if it is not initialised.
+    output_layer (Union[list[tensorops.model.Layer], None]): The output layer of the neural network. Returns `None` if it is not initialised.
+    loss (Optional[tensorops.node.Node, None]): The output of the loss function. `None` if the loss function/calculation is not defined.
+    seed (Optional[int, None], optional): Seed for generating random weights using the `random` library.
     path (string): Path to save and load a model.
+    input_nodes (tensorops.node.Node): Inputs for the model.
     """
 
     def __init__(self, loss_criterion, seed=None):
@@ -26,9 +31,9 @@ class Model(ABC):
         self.weights = []
         self.input_layer = None
         self.output_layer = None
-        self.seed = seed
         self.loss = None
         self._prev_layer = None
+        self.seed = seed
         with self.context:
             self.loss_criterion = loss_criterion
 
@@ -37,29 +42,30 @@ class Model(ABC):
         Executes a forward pass of the neural network given input.
 
         Args:
-            model_inputs (list[tensorops.Node]): The input for the neural network.
+            model_inputs (list[tensorops.node.Node]): The input for the neural network.
 
         Returns:
-            output_node (list[tensorops.Node]): The resulting nodes as output from the calculations of the neural network.
+            list[tensorops.node.Node]: The resulting nodes as output from the calculations of the neural network.
         """
-        assert self.input_layer
-        assert self.output_layer
-        assert len(model_inputs) == len(self.input_layer.input_nodes)
+        assert self.input_layer, f"{type(self).__name__}.input_layer not defined!"
+        assert self.output_layer, f"{type(self).__name__}.output_layer not defined!"
+        assert len(model_inputs) == len(
+            self.input_layer.input_nodes
+        ), f"Inputs length {len(model_inputs)} != number of input nodes of model {len(self.input_layer.input_nodes)}"
         with self.context:
             for layer in self.model_layers:
                 model_inputs = layer(model_inputs)
-
         return model_inputs
 
     def calculate_loss(self, output, target):
         """
         Calculates the loss between the predicted output from the neural network against the desired output using the cost function set in `tensorops.Model.loss_criterion`.
         Args:
-            output (tensorops.Node): The prediction by the neural network to be evaluated against the cost function.
-            target (tensorops.Node): The desired output for the neural network given an input.
+            output (tensorops.node.Node): The prediction by the neural network to be evaluated against the cost function.
+            target (tensorops.node.Node): The desired output for the neural network given an input.
 
         Returns:
-            Model.loss (tensorops.Node): The resulting node as an output from the calculations of the neural network.
+            tensorops.model.Model.loss (tensorops.node.Node): The resulting node as an output from the calculations of the neural network.
         """
         with self.context:
             for model_target_nodes, training_target, model_output_nodes, y in zip(
@@ -70,6 +76,18 @@ class Model(ABC):
         return self.loss
 
     def add_layer(self, num_input_nodes, num_output_nodes, activation_function):
+        """
+        Adds a new layer to the neural network.
+
+        Args:
+            num_input_nodes (int): Number of input nodes to the neural network.
+            num_output_nodes (int): Number of output nodes to the neural network.
+            activation_function (callable): A non-linear activation function for the neural network.
+
+        Returns:
+            new_layer (tensorops.model.Layer): The newly created layer of the neural network.
+        """
+
         if self.model_layers:
             assert (
                 num_input_nodes == self.output_layer.num_output_nodes
@@ -80,7 +98,7 @@ class Model(ABC):
             num_output_nodes,
             activation_function,
             seed=self.seed,
-            input_nodes=self._prev_layer
+            input_nodes=self._prev_layer,
         )
         self._prev_layer = new_layer.layer_output_nodes
         if not self.input_layer:
@@ -93,17 +111,18 @@ class Model(ABC):
             for _ in range(self.output_layer.num_output_nodes)
         ]
         self.weights = self.get_weights()
+        return new_layer
 
     def eval(self):
         """
-        Disables weight tracking in `tensorops.Model`.
+        Disables gradient tracking in `tensorops.Model`.
         """
         for weight in self.weights:
             weight.requires_grad = False
 
     def train(self):
         """
-        Enables weight tracking in `tensorops.Model`.
+        Enables gradient tracking in `tensorops.Model`.
         """
         for weight in self.weights:
             weight.requires_grad = True
@@ -138,14 +157,6 @@ class Model(ABC):
         """
         return self.context.grad_enabled()
 
-    def __call__(self, input_node):
-        return self.forward(input_node)
-
-    def __repr__(self):
-        if self.model_layers:
-            return f"{type(self).__name__}({[layer for layer in self.model_layers]})"
-        return "[Warning]: no weights initialised yet"
-
     def save(self, path):
         """
         Saves the entire model, including layers, nodes, gradients, and optimiser states to a `.pkl` file.
@@ -173,6 +184,14 @@ class Model(ABC):
     def __len__(self):
         return len(self.context.nodes)
 
+    def __call__(self, input_node):
+        return self.forward(input_node)
+
+    def __repr__(self):
+        if self.model_layers:
+            return f"{type(self).__name__}({[layer for layer in self.model_layers]})"
+        return "[Warning]: no weights initialised yet"
+
 
 class Layer:
     """
@@ -181,12 +200,13 @@ class Layer:
     Attributes
     ----------
     context (tensorops.node.NodeContext): Context manager to keep track and store nodes for forward and backward pass as a computational graph.
-    weights (list[list[float]]): a m × n matrix of `float`, where m is the number of inputs per `model.Activation` and n is the number of `model.Activation` in a layer.
-    bias (list[float]): a list of biases for each `tensorops.model.Activation`.
-    seed (Optional[int]): Optional seed for `random.seed()`.
     num_input_nodes (int): Number of neural network inputs in the layer.
     num_output_nodes (int): Number of neurones in the layer.
     activation_function (Optional[Callable]): Non-linear function that determines the activation level of the neurones in the layer based on its input.
+    seed (Optional[int, optional]): Optional seed for `random.seed()`.
+    input_nodes (Optional[list[tensorops.node.Node], optional]): A list of `tensorops.node.Node` passed as inputs to the layer.
+    output_weights (Optional[list[list[float]], optional]): a m × n matrix of `float`, where m is the number of inputs per `model.Activation` and n is the number of `model.Activation` in a layer.
+    output_bias (Optional[list[float], optional]): a list of biases for each `tensorops.model.Activation`.
     layer_output (list[tensorops.model.Activation]): Outputs of neural activation from the layer in the form of `tensorops.model.Activation`.
     layer_output_nodes (list[tensorops.node.Node]): Outputs of neural activation from the layer in the form of `tensorops.node.Node`.
     """
@@ -197,16 +217,14 @@ class Layer:
         num_input_nodes,
         num_output_nodes,
         activation_function,
+        seed=None,
+        input_nodes=None,
         output_weights=None,
         output_bias=None,
-        seed=None,
-        input_nodes=None
     ):
-        self.seed = seed
-        if self.seed:
-            random.seed(self.seed)
         self.context = context
         self.num_input_nodes = num_input_nodes
+        self.num_output_nodes = num_output_nodes
         if input_nodes:
             self.input_nodes = input_nodes
         else:
@@ -214,9 +232,10 @@ class Layer:
                 Node(0.0, requires_grad=False, weight=False)
                 for _ in range(self.num_input_nodes)
             ]
-        self.num_output_nodes = num_output_nodes
         self.activation_function = activation_function
-
+        self.seed = seed
+        if self.seed:
+            random.seed(self.seed)
         if output_weights:
             assert (
                 len(output_weights) == self.num_output_nodes
@@ -238,9 +257,9 @@ class Layer:
             output_bias = [random.uniform(-1, 1) for _ in range(self.num_output_nodes)]
         self.layer_output = [
             Activation(
+                self.context,
                 self.num_input_nodes,
                 self.activation_function,
-                self.context,
                 activation_weight,
                 activation_bias,
                 input_nodes=self.input_nodes,
@@ -260,10 +279,12 @@ class Layer:
         Args:
             forward_inputs (list[tensorops.node.Node]): The input nodes for a single neural network layer.
         Returns:
-            output_nodes (list[tensorops.node.Node]): The list of outputs produced by the neural network layer.
+            list[tensorops.node.Node]: The list of outputs produced by the neural network layer.
         """
 
-        assert len(forward_inputs) == self.num_input_nodes
+        assert (
+            len(forward_inputs) == self.num_input_nodes
+        ), f"Inputs length {len(forward_inputs)} != number of input nodes of layer {len(self.num_input_nodes)}"
 
         for node, forward_input in zip(self.input_nodes, forward_inputs):
             node.set_value(forward_input.value)
@@ -310,9 +331,9 @@ class Activation:
 
     def __init__(
         self,
+        context,
         num_input_nodes,
         activation_function,
-        context,
         weights=None,
         bias=None,
         seed=None,
@@ -366,6 +387,8 @@ class Activation:
 
         Args:
             forward_inputs (list[tensorops.node.Node]): The input nodes for a single neurone.
+        Returns:
+            tensorops.node.Node: The output of the neuronal activation.
         """
 
         assert len(forward_inputs) == self.num_input_nodes

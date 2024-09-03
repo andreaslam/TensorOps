@@ -5,8 +5,9 @@ from tensorops.model import Model
 from tensorops.node import Node, NodeContext, forward
 
 
-class SimpleModel(Model):
+class SimpleSequentialModel(Model):
     def __init__(self, loss_criterion):
+        super().__init__(loss_criterion)
         self.context = NodeContext()
         self.loss_criterion = loss_criterion
         self.model_layers = []

@@ -53,7 +53,6 @@ if __name__ == "__main__":
         for X, y in zip(X_train, y_train):
             layer.zero_grad()
             y_preds = layer(X)
-            print(y_preds)
             loss = loss_criterion(y_preds, y)
             loss.backward()
             optimiser.step()
