@@ -8,7 +8,7 @@ from tensorops.loss import MSELoss
 from tensorops.node import Node
 from tensorops.optim import Adam
 from tqdm import tqdm
-from helpers import SimpleSequentialModel
+from tensorops.utils.models import SimpleSequentialModel
 
 
 class LinearModel(SimpleSequentialModel):

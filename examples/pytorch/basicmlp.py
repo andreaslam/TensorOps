@@ -44,14 +44,15 @@ class MLP(nn.Module):
         return x
 
 
-def training_loop(X, y, mlp, optim, loss_criterion, loss_plot, num_epochs):
+def training_loop(X_train, y_train, mlp, optim, loss_criterion, loss_plot, num_epochs):
     for _ in tqdm(range(num_epochs), desc="Training MLP"):
-        optim.zero_grad()
-        outputs = mlp(X)
-        loss = loss_criterion(outputs, y)
-        loss.backward()
-        loss_plot.register_datapoint(loss.item(), f"{type(mlp).__name__}-PyTorch")
-        optim.step()
+        for X, y in zip(X_train, y_train):
+            optim.zero_grad()
+            outputs = mlp(X)
+            loss = loss_criterion(outputs, y)
+            loss.backward()
+            loss_plot.register_datapoint(loss.item(), f"{type(mlp).__name__}-PyTorch")
+            optim.step()
 
 
 if __name__ == "__main__":
@@ -63,19 +64,21 @@ if __name__ == "__main__":
     num_hidden_layers = 10
     num_output_nodes = 1
 
-    X = torch.tensor([[random.uniform(-2, 2) for _ in range(num_input_nodes)]])
-    y = torch.tensor([[random.uniform(0, 1) for _ in range(num_output_nodes)]])
+    num_datapoints = 2
+    
+    X = torch.tensor([[random.uniform(-2, 2) for _ in range(num_input_nodes)] for _ in range(num_datapoints)])
+    y = torch.tensor([[random.uniform(0, 1) for _ in range(num_output_nodes)] for _ in range(num_datapoints)])
 
     model = MLP(
         num_input_nodes,
         num_output_nodes,
         num_hidden_layers,
         num_hidden_nodes,
-        nn.Sigmoid(),
+        nn.Softplus(),
     )
 
     loss_criterion = nn.MSELoss()
-    optimiser = optim.SGD(model.parameters(), lr=1e-1)
+    optimiser = optim.Adam(model.parameters(), lr=1e-2)
 
     loss_plot = PlotterUtil()
 

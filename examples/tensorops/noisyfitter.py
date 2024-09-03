@@ -8,7 +8,7 @@ from tensorops.node import Node
 from tensorops.loss import MSELoss
 from tensorops.optim import SGD
 from tensorops.utils.tensorutils import PlotterUtil, visualise_graph
-from helpers import SimpleSequentialModel
+from tensorops.utils.models import SimpleSequentialModel
 
 
 class LinearModel(SimpleSequentialModel):

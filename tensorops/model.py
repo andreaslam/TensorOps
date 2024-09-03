@@ -1,9 +1,9 @@
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 import random
 import pickle
+from abc import ABC, abstractmethod
 
-
-class Model:
+class Model(ABC):
     """
     `tensorops.model.Model` is the abstract base class for a neural network.
 
@@ -37,6 +37,7 @@ class Model:
         with self.context:
             self.loss_criterion = loss_criterion
 
+    @abstractmethod
     def forward(self, model_inputs):
         """
         Executes a forward pass of the neural network given input.
@@ -47,15 +48,6 @@ class Model:
         Returns:
             list[tensorops.node.Node]: The resulting nodes as output from the calculations of the neural network.
         """
-        assert self.input_layer, f"{type(self).__name__}.input_layer not defined!"
-        assert self.output_layer, f"{type(self).__name__}.output_layer not defined!"
-        assert len(model_inputs) == len(
-            self.input_layer.input_nodes
-        ), f"Inputs length {len(model_inputs)} != number of input nodes of model {len(self.input_layer.input_nodes)}"
-        with self.context:
-            for layer in self.model_layers:
-                model_inputs = layer(model_inputs)
-        return model_inputs
 
     def calculate_loss(self, output, target):
         """

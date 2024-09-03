@@ -2,13 +2,13 @@ import random
 
 from tqdm import tqdm
 from tensorops.loss import MSELoss
-from tensorops.model import Model
+from tensorops.utils.models import SequentialModel
 from tensorops.node import Node, relu, tanh
 from tensorops.optim import SGD
 from tensorops.utils.tensorutils import PlotterUtil
 
 
-class MNISTModel(Model):
+class MNISTModel(SequentialModel):
     def __init__(
         self,
         loss_criterion,

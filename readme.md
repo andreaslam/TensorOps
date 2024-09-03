@@ -35,13 +35,14 @@ Most examples implemented in the examples folder, will have a corresponding [PyT
 - Backward pass
 - Node weight and gradient tracking (enable/disable)
 - Arithmetic operations (BIDMAS, negation, exponentiation)
-- Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid)
+- Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid, ramp)
 - Lazy evaluation
 
 ### Model
 - Mix and match activation functions
 - Configurable layer sizes
 - Customisable loss functions
+- Customisable forward passes and general-purpose neural network abstractions
 
 ## Loss functions
 - Mean Absolute Error

@@ -35,3 +35,20 @@ class SimpleSequentialModel(Model):
         if [node for node in self.context.nodes if node.weight]:
             return f"{type(self).__name__}(weights={[node for node in self.context.nodes if node.weight]})"
         return "[Warning]: no weights initialised yet"
+
+# A general-purpose `tensorops.model.Model` subclass used to create a `tensorops.model.Model` that does not require custom forward operations
+
+class SequentialModel(Model):
+    def __init__(self, loss_criterion, seed=None):
+        super().__init__(loss_criterion, seed)
+    
+    def forward(self, model_inputs):
+        assert self.input_layer, f"{type(self).__name__}.input_layer not defined!"
+        assert self.output_layer, f"{type(self).__name__}.output_layer not defined!"
+        assert len(model_inputs) == len(
+            self.input_layer.input_nodes
+        ), f"Inputs length {len(model_inputs)} != number of input nodes of model {len(self.input_layer.input_nodes)}"
+        with self.context:
+            for layer in self.model_layers:
+                model_inputs = layer(model_inputs)
+        return model_inputs

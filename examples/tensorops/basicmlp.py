@@ -3,14 +3,14 @@
 
 from tqdm import tqdm
 from tensorops.loss import MSELoss
-from tensorops.model import Model
-from tensorops.node import Node, sigmoid
-from tensorops.optim import SGD
+from tensorops.utils.models import SequentialModel
+from tensorops.node import Node, sigmoid, ramp
+from tensorops.optim import Adam
 from tensorops.utils.tensorutils import PlotterUtil
 import random
 
 
-class MLP(Model):
+class MLP(SequentialModel):
     def __init__(
         self,
         loss_criterion,
@@ -35,14 +35,15 @@ class MLP(Model):
             )
 
 
-def training_loop(X, y, mlp, optim, loss_plot, num_epochs):
+def training_loop(X_train, y_train, mlp, optim, loss_plot, num_epochs):
     for _ in tqdm(range(num_epochs), desc="Training MLP"):
-        mlp.zero_grad()
-        outputs = mlp(X)
-        loss = mlp.calculate_loss(outputs, y)
-        mlp.backward()
-        loss_plot.register_datapoint(loss.value, f"{type(mlp).__name__}-TensorOps")
-        optim.step()
+        for X, y in zip(X_train, y_train):
+            mlp.zero_grad()
+            outputs = mlp(X)
+            loss = mlp.calculate_loss(outputs, y)
+            mlp.backward()
+            loss_plot.register_datapoint(loss.value, f"{type(mlp).__name__}-TensorOps")
+            optim.step()
 
 
 if __name__ == "__main__":
@@ -54,12 +55,14 @@ if __name__ == "__main__":
     num_hidden_layers = 10
     num_output_nodes = 1
 
-    X = [
+    num_datapoints = 2
+    
+    X = [[
         Node(random.uniform(-2, 2), requires_grad=False) for _ in range(num_input_nodes)
-    ]
-    y = [
+    ] for _ in range(num_datapoints)]
+    y = [[
         Node(random.uniform(0, 1), requires_grad=False) for _ in range(num_output_nodes)
-    ]
+    ] for _ in range(num_datapoints)]
 
     model = MLP(
         MSELoss(),
@@ -67,10 +70,10 @@ if __name__ == "__main__":
         num_output_nodes,
         num_hidden_layers,
         num_hidden_nodes,
-        sigmoid,
+        ramp,
     )
 
-    optim = SGD(model.get_weights(), lr=1e-1)
+    optim = Adam(model.get_weights(), lr=1e-2)
 
     loss_plot = PlotterUtil()
 
