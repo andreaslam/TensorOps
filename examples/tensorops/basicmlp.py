@@ -56,13 +56,21 @@ if __name__ == "__main__":
     num_output_nodes = 1
 
     num_datapoints = 2
-    
-    X = [[
-        Node(random.uniform(-2, 2), requires_grad=False) for _ in range(num_input_nodes)
-    ] for _ in range(num_datapoints)]
-    y = [[
-        Node(random.uniform(0, 1), requires_grad=False) for _ in range(num_output_nodes)
-    ] for _ in range(num_datapoints)]
+
+    X = [
+        [
+            Node(random.uniform(-2, 2), requires_grad=False)
+            for _ in range(num_input_nodes)
+        ]
+        for _ in range(num_datapoints)
+    ]
+    y = [
+        [
+            Node(random.uniform(0, 1), requires_grad=False)
+            for _ in range(num_output_nodes)
+        ]
+        for _ in range(num_datapoints)
+    ]
 
     model = MLP(
         MSELoss(),

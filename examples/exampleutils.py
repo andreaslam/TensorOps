@@ -4,7 +4,6 @@ import torchvision
 import torchvision.transforms as transforms
 from tensorops.node import Node
 
-
 def tensor_to_node(tensor, optional_open_handle=None):
     """
     Convert an n-dimensional torch.Tensor to a corresponding n-dimensional tensorops.Node.
@@ -171,3 +170,6 @@ def verify_dataset(
     assert num_samples_train > 0 and num_samples_train <= len(train_data)
 
     assert num_samples_test > 0 and num_samples_test <= len(test_data)
+
+if __name__ == "__main__":
+    prepare_mnist_dataset(60000, 10000)

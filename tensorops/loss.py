@@ -31,8 +31,8 @@ class L1Loss(Loss):
         If the inputs are floats, it computes the absolute difference.
 
         Args:
-            actual (Union[float, List[float]]): The actual output value(s).
-            target (Union[float, List[float]]): The target output value(s).
+            actual (Union[float, List[tensorops.node.Node]]): The actual output value(s).
+            target (Union[float, List[tensorops.node.Node]]): The target output value(s).
 
         Returns:
             tensorops.node.Node(): The computed L1 loss value.

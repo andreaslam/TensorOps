@@ -9,9 +9,13 @@ def init_network_params(layer):
             [
                 [random.uniform(-1, 1) for _ in range(layer.in_features)]
                 for _ in range(layer.out_features)
-            ]
+            ],
+            dtype=torch.float64,
         )
     )
     layer.bias = nn.Parameter(
-        torch.tensor([random.uniform(-1, 1) for _ in range(layer.out_features)])
+        torch.tensor(
+            [random.uniform(-1, 1) for _ in range(layer.out_features)],
+            dtype=torch.float64,
+        )
     )

@@ -65,9 +65,19 @@ if __name__ == "__main__":
     num_output_nodes = 1
 
     num_datapoints = 2
-    
-    X = torch.tensor([[random.uniform(-2, 2) for _ in range(num_input_nodes)] for _ in range(num_datapoints)])
-    y = torch.tensor([[random.uniform(0, 1) for _ in range(num_output_nodes)] for _ in range(num_datapoints)])
+
+    X = torch.tensor(
+        [
+            [random.uniform(-2, 2) for _ in range(num_input_nodes)]
+            for _ in range(num_datapoints)
+        ]
+    )
+    y = torch.tensor(
+        [
+            [random.uniform(0, 1) for _ in range(num_output_nodes)]
+            for _ in range(num_datapoints)
+        ]
+    )
 
     model = MLP(
         num_input_nodes,

@@ -3,6 +3,7 @@ import random
 import pickle
 from abc import ABC, abstractmethod
 
+
 class Model(ABC):
     """
     `tensorops.model.Model` is the abstract base class for a neural network.

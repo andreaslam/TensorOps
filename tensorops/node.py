@@ -1,6 +1,6 @@
 import math
 import pickle
-
+import itertools
 
 class Node:
 
@@ -109,41 +109,45 @@ class Node:
     @staticmethod
     def load(path, limit=None):
         """
-        Loads a single `tensorops.node.Node()` or a list[tensorops.node.Node()].
+        Loads a single `tensorops.node.Node()` or a generator of `tensorops.node.Node()`.
 
         Args:
             path (str): The file path from which to load the node(s).
             limit (int, optional): Loads the first n items from the pickle file.
 
         Returns:
-            Union[tensorops.node.Node, list[tensorops.node.Node]]: The loaded node(s).
+            Union[Node, Generator[Node, None, None]]: The loaded node(s).
         """
-
-        items = []
-
-        with open(path, "rb") as f:
-            if limit:
-                for _ in range(limit):
+        def node_generator():
+            with open(path, 'rb') as f:
+                count = 0
+                while limit is None or count < limit:
                     try:
                         data = pickle.load(f)
-                        items.append(data)
-                    except EOFError:
-                        break
-            else:
-                while True:
-                    try:
-                        data = pickle.load(f)
-                        items.append(data)
+                        if isinstance(data, Node):
+                            yield data
+                        elif isinstance(data, list) and all(isinstance(item, Node) for item in data):
+                            for item in data:
+                                if limit is not None and count >= limit:
+                                    return
+                                yield item
+                                count += 1
+                        else:
+                            raise ValueError("All items must be of type `tensorops.node.Node` or a list of `Node`.")
+                        count += 1
                     except EOFError:
                         break
 
-        if len(items) == 1:
-            return items[0]
+        generator = node_generator()
+        first_node = next(generator, None)
 
-        if all(isinstance(item, Node) for item in items):
-            return items
-        else:
-            raise ValueError("All items must be of type `tensorops.node.Node`.")
+        if first_node is None:
+            return generator
+        
+        if limit == 1:
+            return first_node
+        
+        return itertools.chain([first_node], generator)
 
 
 class NodeContext:
@@ -224,7 +228,6 @@ class NodeContext:
         """
         with open(path, "rb") as f:
             return pickle.load(f)
-
 
 class Add(Node):
     def __init__(self, node1, node2):
@@ -382,7 +385,7 @@ def relu(node):
 
 
 class LeakyReLU(Node):
-    def __init__(self, node1, leaky_grad=0.001):
+    def __init__(self, node1, leaky_grad=0.01):
         super().__init__(0)
         assert isinstance(
             leaky_grad, (float, int)
@@ -405,7 +408,7 @@ class LeakyReLU(Node):
             self.node1.grad += self.grad * self.leaky_grad
 
 
-def leaky_relu(node, leaky_grad=0.001):
+def leaky_relu(node, leaky_grad=0.01):
     return LeakyReLU(node, leaky_grad)
 
 
