@@ -76,4 +76,4 @@ class SequentialModel(Model):
             ):
                 model_output_nodes.set_value(y.value)
                 model_target_nodes.set_value(training_target.value)
-        return self.loss # type: ignore
+        return self.loss  # type: ignore

@@ -5,7 +5,7 @@ from tqdm import tqdm
 from tensorops.loss import MSELoss
 from tensorops.utils.models import SequentialModel
 from tensorops.node import Node, sigmoid, ramp
-from tensorops.optim import Adam
+from tensorops.optim import AdamW
 from tensorops.utils.tensorutils import PlotterUtil
 import random
 
@@ -81,7 +81,7 @@ if __name__ == "__main__":
         ramp,
     )
 
-    optim = Adam(model.get_weights(), lr=1e-2)
+    optim = AdamW(model.get_weights(), lr=1e-3)
 
     loss_plot = PlotterUtil()
 
