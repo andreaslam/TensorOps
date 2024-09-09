@@ -1,103 +1,96 @@
-import random
-
-from tqdm import tqdm
+import copy
 from tensorops.loss import MSELoss
 from tensorops.utils.models import SequentialModel
-from tensorops.node import Node, relu, tanh
-from tensorops.optim import SGD
+from tensorops.node import Node, relu
+from tensorops.optim import Adam
 from tensorops.utils.tensorutils import PlotterUtil
+import matplotlib.pyplot as plt
+import numpy as np
+import tqdm
+from sklearn.model_selection import train_test_split
+from sklearn.datasets import fetch_california_housing
+from sklearn.preprocessing import StandardScaler
+
+# Read data
+data = fetch_california_housing()
+X, y = data.data, data.target
+
+# train-test split for model evaluation
+X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+    X, y, train_size=0.7, shuffle=True
+)
+
+# Standardizing data
+scaler = StandardScaler()
+scaler.fit(X_train_raw)
+X_train = scaler.transform(X_train_raw)
+X_test = scaler.transform(X_test_raw)
 
 
-class MNISTModel(SequentialModel):
-    def __init__(
-        self,
-        loss_criterion,
-        num_input_nodes,
-        num_output_nodes,
-        num_hidden_layers,
-        num_hidden_nodes,
-    ):
-        super().__init__(loss_criterion)
-        self.num_hidden_layers = num_hidden_layers
-        with self.context:
-            self.add_layer(num_input_nodes, num_hidden_nodes, tanh)
-            for _ in range(self.num_hidden_layers):
-                self.add_layer(num_hidden_nodes, num_hidden_nodes, relu)
-            self.add_layer(num_hidden_nodes, num_output_nodes, None)
-            self.loss = self.loss_criterion(
-                self.targets, self.output_layer.layer_output_nodes
-            )
+class RegressionModel(SequentialModel):
+    def __init__(self, loss_criterion, seed=None):
+        super().__init__(loss_criterion, seed)
+        self.add_layer(8, 24, relu)
+        self.add_layer(24, 12, relu)
+        self.add_layer(12, 6, relu)
+        self.add_layer(6, 1, relu)
 
 
-def training_loop(X_train, y_train, mlp, optim, loss_plot, num_epochs):
-    for _ in tqdm(range(num_epochs), desc="Training MNIST network"):
-        for X, y in zip(X_train, y_train):
-            mlp.zero_grad()
-            y_preds = mlp(X)
-            loss = mlp.calculate_loss(y_preds, y)
-            print(y_preds, y, loss)
-            mlp.backward()
-            loss_plot.register_datapoint(loss.value, f"{type(mlp).__name__}-TensorOps")
-            optim.step()
+model = RegressionModel(MSELoss(), 42)
 
+# loss function and optimiser
+optimiser = Adam(model.get_weights(), lr=0.0001)
 
-def load_data(file_paths):
-    all_data = []
+n_epochs = 100  # number of epochs to run
+batch_size = 10  # size of each batch
+batch_start = torch.arange(0, len(X_train), batch_size)
 
-    for file in file_paths:
-        all_data.append(Node.load(file, limit=784 * 10))
-    return all_data
+# Hold the best model
+best_mse = np.inf  # init to infinity
+best_weights = None
+history = []
 
+for epoch in range(n_epochs):
+    model.train()
+    with tqdm.tqdm(batch_start, unit="batch", mininterval=0, disable=True) as bar:
+        bar.set_description(f"Epoch {epoch}")
+        for start in bar:
+            # take a batch
+            X_batch = X_train[start : start + batch_size]
+            y_batch = y_train[start : start + batch_size]
+            # forward pass
+            y_pred = model(X_batch)
+            loss = loss_fn(y_pred, y_batch)
+            # backward pass
+            optimiser.zero_grad()
+            loss.backward()
+            # update weights
+            optimiser.step()
+            # print progress
+            bar.set_postfix(mse=float(loss))
+    # evaluate accuracy at end of each epoch
+    model.eval()
+    y_pred = model(X_test)
+    mse = loss_fn(y_pred, y_test)
+    mse = float(mse)
+    history.append(mse)
+    if mse < best_mse:
+        best_mse = mse
+        best_weights = copy.deepcopy(model.state_dict())
 
-if __name__ == "__main__":
-    random.seed(42)
+# restore model and return best accuracy
+model.load_state_dict(best_weights)
+print("MSE: %.2f" % best_mse)
+print("RMSE: %.2f" % np.sqrt(best_mse))
+plt.plot(history)
+plt.show()
 
-    num_epochs = 100
-    num_input_nodes = 784
-    num_hidden_nodes = 64
-    num_hidden_layers = 10
-    num_output_nodes = 10
-    folder_path = "/Users/andreas/Desktop/Code/RemoteFolder/TensorOps/examples/data/MNIST/processed_node"
-    files = [
-        f"{folder_path}/test_data_nodes.pkl",
-        f"{folder_path}/test_labels_nodes.pkl",
-        f"{folder_path}/train_data_nodes.pkl",
-        f"{folder_path}/train_labels_nodes.pkl",
-    ]
-
-    all_data = load_data(files)
-
-    X_test, y_test, X_train, y_train = all_data
-
-    X = []
-    start = 0
-    while True:
-        X += [X_train[start : start + 784]]
-        start += 784
-        if start == len(X_train):
-            break
-
-    X_train = X
-
-    loss_plot = PlotterUtil()
-
-    model = MNISTModel(
-        MSELoss(),
-        num_input_nodes,
-        num_output_nodes,
-        num_hidden_layers,
-        num_hidden_nodes,
-    )
-
-    optim = SGD(model.get_weights(), lr=1e-4)
-
-    training_loop(
-        X_train,
-        y_train,
-        model,
-        optim,
-        loss_plot,
-        num_epochs,
-    )
-
-    loss_plot.plot()
+model.eval()
+with torch.no_grad():
+    # Test out inference with 5 samples
+    for i in range(5):
+        X_sample = X_test_raw[i : i + 1]
+        X_sample = scaler.transform(X_sample)
+        X_sample = torch.tensor(X_sample, dtype=torch.float32)
+        y_pred = model(X_sample)
+        print(f"{X_test_raw[i]} -> {y_pred[0].numpy()} (expected {y_test[i].numpy()})")

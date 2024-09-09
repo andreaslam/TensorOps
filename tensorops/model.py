@@ -1,3 +1,7 @@
+from __future__ import annotations
+from typing import Any, Callable, Union
+
+from tensorops.loss import Loss
 from tensorops.node import Node, NodeContext, forward, backward, zero_grad
 import random
 import pickle
@@ -25,21 +29,21 @@ class Model(ABC):
     input_nodes (tensorops.node.Node): Inputs for the model.
     """
 
-    def __init__(self, loss_criterion, seed=None):
+    def __init__(self, loss_criterion: Loss, seed: int | None = None) -> None:
         self.context = NodeContext()
         self.model_layers = []
         self.targets = []
         self.weights = []
-        self.input_layer = None
-        self.output_layer = None
+        self.input_layer: Union[Layer, None] = None
+        self.output_layer: Union[Layer, None] = None
         self.loss = None
-        self._prev_layer = None
+        self._prev_layer: list[Layer] | None = None
         self.seed = seed
         with self.context:
             self.loss_criterion = loss_criterion
 
     @abstractmethod
-    def forward(self, model_inputs):
+    def forward(self, model_inputs: Union[list[Node], Node]) -> Union[list[Node], Node]:
         """
         Executes a forward pass of the neural network given input.
 
@@ -50,7 +54,10 @@ class Model(ABC):
             list[tensorops.node.Node]: The resulting nodes as output from the calculations of the neural network.
         """
 
-    def calculate_loss(self, output, target):
+    @abstractmethod
+    def calculate_loss(
+        self, output: Union[list[Node], Node], target: Union[list[Node], Node]
+    ) -> Union[None, Node, list[Node]]:
         """
         Calculates the loss between the predicted output from the neural network against the desired output using the cost function set in `tensorops.Model.loss_criterion`.
         Args:
@@ -60,15 +67,10 @@ class Model(ABC):
         Returns:
             tensorops.model.Model.loss (tensorops.node.Node): The resulting node as an output from the calculations of the neural network.
         """
-        with self.context:
-            for model_target_nodes, training_target, model_output_nodes, y in zip(
-                self.targets, target, self.output_layer.layer_output_nodes, output
-            ):
-                model_output_nodes.set_value(y.value)
-                model_target_nodes.set_value(training_target.value)
-        return self.loss
 
-    def add_layer(self, num_input_nodes, num_output_nodes, activation_function):
+    def add_layer(
+        self, num_input_nodes: int, num_output_nodes: int, activation_function: Callable
+    ) -> Layer:
         """
         Adds a new layer to the neural network.
 
@@ -83,7 +85,7 @@ class Model(ABC):
 
         if self.model_layers:
             assert (
-                num_input_nodes == self.output_layer.num_output_nodes
+                num_input_nodes == self.output_layer.num_output_nodes  # type: ignore
             ), f"Layer shapes invalid! Expected current layer shape to be ({self.model_layers[-1].num_output_nodes}, n) from previous layer shape ({self.model_layers[-1].num_input_nodes}, {self.model_layers[-1].num_output_nodes})"
         new_layer = Layer(
             self.context,
@@ -91,9 +93,9 @@ class Model(ABC):
             num_output_nodes,
             activation_function,
             seed=self.seed,
-            input_nodes=self._prev_layer,
+            input_nodes=self._prev_layer,  # type: ignore
         )
-        self._prev_layer = new_layer.layer_output_nodes
+        self._prev_layer = new_layer.layer_output_nodes  # type: ignore
         if not self.input_layer:
             self.input_layer = new_layer
         self.model_layers.append(new_layer)
@@ -101,38 +103,38 @@ class Model(ABC):
 
         self.targets = [
             Node(0.0, requires_grad=False)
-            for _ in range(self.output_layer.num_output_nodes)
+            for _ in range(self.output_layer.num_output_nodes)  # type: ignore
         ]
         self.weights = self.get_weights()
         return new_layer
 
-    def eval(self):
+    def eval(self) -> None:
         """
         Disables gradient tracking in `tensorops.Model`.
         """
         for weight in self.weights:
             weight.requires_grad = False
 
-    def train(self):
+    def train(self) -> None:
         """
         Enables gradient tracking in `tensorops.Model`.
         """
         for weight in self.weights:
             weight.requires_grad = True
 
-    def backward(self):
+    def backward(self) -> None:
         """
         Performs the backward pass for the current model. Wrapper function for `tensorops.backward()`
         """
         backward(self.context.nodes)
 
-    def zero_grad(self):
+    def zero_grad(self) -> None:
         """
         Sets gradients to all nodes within the model to 0. Wrapper function for `tensorops.zero_grad()`
         """
         zero_grad(self.context.nodes)
 
-    def get_weights(self):
+    def get_weights(self) -> list[Node]:
         """
         Returns the nodes that are weights within the `tensorops.Model` instance. Wrapper function for `tensorops.NodeContext.weights_enabled()`
 
@@ -141,7 +143,7 @@ class Model(ABC):
         """
         return self.context.weights_enabled()
 
-    def get_gradients(self):
+    def get_gradients(self) -> list[Node]:
         """
         Returns the nodes that have gradient tracking enabled within the `tensorops.Model` instance. Wrapper function for `tensorops.NodeContext.get_gradients()`
 
@@ -150,7 +152,7 @@ class Model(ABC):
         """
         return self.context.grad_enabled()
 
-    def save(self, path):
+    def save(self, path: str) -> None:
         """
         Saves the entire model, including layers, nodes, gradients, and optimiser states to a `.pkl` file.
 
@@ -161,7 +163,7 @@ class Model(ABC):
             pickle.dump(self, f)
 
     @staticmethod
-    def load(path):
+    def load(path: str) -> Any:
         """
         Loads a model from a `.pkl` file.
 
@@ -174,13 +176,13 @@ class Model(ABC):
         with open(path, "rb") as f:
             return pickle.load(f)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.context.nodes)
 
-    def __call__(self, input_node):
+    def __call__(self, input_node: list[Node] | Node) -> list[Node] | Node:
         return self.forward(input_node)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.model_layers:
             return f"{type(self).__name__}({[layer for layer in self.model_layers]})"
         return "[Warning]: no weights initialised yet"
@@ -206,14 +208,14 @@ class Layer:
 
     def __init__(
         self,
-        context,
-        num_input_nodes,
-        num_output_nodes,
-        activation_function,
-        seed=None,
-        input_nodes=None,
-        output_weights=None,
-        output_bias=None,
+        context: NodeContext,
+        num_input_nodes: int,
+        num_output_nodes: int,
+        activation_function: Callable,
+        seed: int | None = None,
+        input_nodes: list[Node] | None = None,
+        output_weights: list[list[float]] | None = None,
+        output_bias: list[float] | None = None,
     ):
         self.context = context
         self.num_input_nodes = num_input_nodes
@@ -265,7 +267,7 @@ class Layer:
         self.weights = [activation.weights for activation in self.layer_output]
         self.bias = [activation.bias for activation in self.layer_output]
 
-    def forward(self, forward_inputs):
+    def forward(self, forward_inputs: list[Node]) -> list[Node]:
         """
         Performs a forward pass for all neurones (`tensorops.model.Activation`) within a single neural network layer.
 
@@ -277,14 +279,14 @@ class Layer:
 
         assert (
             len(forward_inputs) == self.num_input_nodes
-        ), f"Inputs length {len(forward_inputs)} != number of input nodes of layer {len(self.num_input_nodes)}"
+        ), f"Inputs length {len(forward_inputs)} != number of input nodes of layer {self.num_input_nodes}"
 
         for node, forward_input in zip(self.input_nodes, forward_inputs):
             node.set_value(forward_input.value)
 
         return [activation(self.input_nodes) for activation in self.layer_output]
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"""
         {type(self).__name__}(
         num_input_nodes = {self.num_input_nodes},
@@ -295,7 +297,7 @@ class Layer:
         )
         """
 
-    def __call__(self, forward_inputs):
+    def __call__(self, forward_inputs: list[Node]) -> list[Node]:
         return self.forward(forward_inputs)
 
 
@@ -324,13 +326,13 @@ class Activation:
 
     def __init__(
         self,
-        context,
-        num_input_nodes,
-        activation_function,
-        weights=None,
-        bias=None,
-        seed=None,
-        input_nodes=None,
+        context: NodeContext,
+        num_input_nodes: int,
+        activation_function: Callable,
+        weights: list[float] | None = None,
+        bias: float | None = None,
+        seed: int | None = None,
+        input_nodes: list[Node] | None = None,
     ):
         self.num_input_nodes = num_input_nodes
         self.seed = seed
@@ -374,7 +376,7 @@ class Activation:
             else:
                 self.activation_output = output_node + self.bias
 
-    def forward(self, forward_inputs):
+    def forward(self, forward_inputs: list[Node]) -> Node:
         """
         Performs an activation step for a single neurone.
 
@@ -390,10 +392,10 @@ class Activation:
         forward(self.context.nodes)
         return self.activation_output
 
-    def __call__(self, forward_inputs):
+    def __call__(self, forward_inputs: list[Node]) -> Node:
         return self.forward(forward_inputs)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         weights_and_inputs_string = ", ".join(
             f"(weight_{num}: {weight}, input_{num}: {node})"
             for num, (weight, node) in enumerate(zip(self.weights, self.input_nodes))

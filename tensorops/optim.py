@@ -1,17 +1,23 @@
+from __future__ import annotations
 import math
 import pickle
+from typing import Any
+
+from tensorops.node import Node
 
 
 class Optim:
-    def __init__(self, lr=1e-3, maximise=False, weight_decay=0.0):
+    def __init__(
+        self, lr=1e-3, maximise: bool = False, weight_decay: float = 0.0
+    ) -> None:
         self.lr = lr
         self.maximise = maximise
         self.weight_decay = weight_decay
 
-    def step(self):
+    def step(self) -> None:
         pass
 
-    def save(self, path):
+    def save(self, path: str) -> None:
         """
         Saves the optimiser to a `.pkl` file.
 
@@ -22,7 +28,7 @@ class Optim:
             pickle.dump(self, f)
 
     @staticmethod
-    def load(path):
+    def load(path: str) -> Any:
         """
         Loads an optimiser from a `.pkl` file.
 
@@ -39,25 +45,25 @@ class Optim:
 class Adam(Optim):
     def __init__(
         self,
-        parameters,
-        lr=1e-3,
-        maximise=False,
-        betas=(0.9, 0.999),
-        eps=1e-8,
-        weight_decay=0.0,
-        amsgrad=False,
-    ):
+        parameters: list[Node],
+        lr: float = 1e-3,
+        maximise: bool = False,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        amsgrad: bool = False,
+    ) -> None:
         super().__init__(lr, maximise, weight_decay)
         self.parameters = parameters
         self.t = 0
         self.betas = betas
-        self.m = {param: 0 for param in parameters}
-        self.v = {param: 0 for param in parameters}
+        self.m = {param: 0.0 for param in parameters}
+        self.v = {param: 0.0 for param in parameters}
         self.eps = eps
         self.amsgrad = amsgrad
-        self.v_hat_max = {param: 0 for param in parameters}
+        self.v_hat_max = {param: 0.0 for param in parameters}
 
-    def step(self):
+    def step(self) -> None:
         self.t += 1
         for param in filter(lambda p: p.requires_grad, self.parameters):
             g_t = -param.grad if self.maximise else param.grad
@@ -85,25 +91,25 @@ class Adam(Optim):
 class AdamW(Optim):
     def __init__(
         self,
-        parameters,
-        lr=1e-3,
-        maximise=False,
-        betas=(0.9, 0.999),
-        eps=1e-8,
-        weight_decay=0.01,
-        amsgrad=False,
-    ):
+        parameters: list[Node],
+        lr: float = 1e-3,
+        maximise: bool = False,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.01,
+        amsgrad: bool = False,
+    ) -> None:
         super().__init__(lr, maximise, weight_decay)
         self.parameters = parameters
         self.t = 0
         self.betas = betas
-        self.m = {param: 0 for param in parameters}
-        self.v = {param: 0 for param in parameters}
+        self.m = {param: 0.0 for param in parameters}
+        self.v = {param: 0.0 for param in parameters}
         self.eps = eps
         self.amsgrad = amsgrad
-        self.v_hat_max = {param: 0 for param in parameters}
+        self.v_hat_max = {param: 0.0 for param in parameters}
 
-    def step(self):
+    def step(self) -> None:
         self.t += 1
         for param in filter(lambda p: p.requires_grad, self.parameters):
             g_t = -param.grad if self.maximise else param.grad
@@ -132,13 +138,13 @@ class SGD(Optim):
     def __init__(
         self,
         parameters,
-        lr=1e-3,
-        maximise=False,
-        weight_decay=0.0,
-        nesterov=False,
-        dampening=0,
-        momentum=0,
-    ):
+        lr: float = 1e-3,
+        maximise: bool = False,
+        weight_decay: float = 0.0,
+        nesterov: bool = False,
+        dampening: int = 0,
+        momentum: int = 0,
+    ) -> None:
         super().__init__(lr, maximise, weight_decay)
         self.parameters = parameters
         self.t = 0
@@ -147,7 +153,7 @@ class SGD(Optim):
         self.momentum = momentum
         self.b_t = {param: 0 for param in parameters}
 
-    def step(self):
+    def step(self) -> None:
         self.t += 1
         for param in filter(lambda p: p.requires_grad, self.parameters):
             g_t = param.grad

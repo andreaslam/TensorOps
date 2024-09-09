@@ -8,22 +8,22 @@ class Loss(ABC):
     `tensorops.Loss` is the abstract base class that handles cost function computation.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         ...
 
     @abstractmethod
-    def loss(self, actual, target):
+    def loss(self, actual, target) -> Node:
         ...
 
-    def __call__(self, actual, target):
+    def __call__(self, actual, target) -> Node:
         return self.loss(actual, target)
 
 
 class L1Loss(Loss):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-    def loss(self, actual, target):
+    def loss(self, actual, target) -> Node:
         """
         Calculate the L1 loss between the actual and target values.
 
@@ -51,10 +51,10 @@ class L1Loss(Loss):
 
 
 class MSELoss(Loss):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
-    def loss(self, actual, target):
+    def loss(self, actual, target) -> Node:
         """
         Calculate the MSE loss between the actual and target values. Works with both single values and lists of `tensorops.node.Node`.
 

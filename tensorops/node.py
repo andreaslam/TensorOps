@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import math
 import pickle
 import itertools
+from typing import Any, Generator
+
 
 class Node:
 
@@ -17,12 +21,14 @@ class Node:
     current_context (Optional[tensorops.NodeContext]): Manages the operational context for nodes during computation.
     """
 
-    def __init__(self, value, requires_grad=True, weight=False):
+    def __init__(
+        self, value: float, requires_grad: bool = True, weight: bool = False
+    ) -> None:
         value = float(value)
         assert isinstance(value, float), f"Datatype must be a float, not {type(value)}"
 
         self.value = value
-        self.grad = 0
+        self.grad = 0.0
         self.parents = []
         self.children = []
         self.requires_grad = requires_grad
@@ -30,69 +36,69 @@ class Node:
         if NodeContext.current_context is not None:
             NodeContext.current_context.add_node(self)
 
-    def __add__(self, other):
+    def __add__(self, other: Node) -> Add:
         return Add(self, other)
 
-    def __mul__(self, other):
+    def __mul__(self, other: Node) -> Mul:
         return Mul(self, other)
 
-    def __sub__(self, other):
+    def __sub__(self, other: Node) -> Sub:
         return Sub(self, other)
 
-    def __truediv__(self, other):
+    def __truediv__(self, other: Node) -> Div:
         return Div(self, other)
 
-    def __pow__(self, index):
+    def __pow__(self, index: int | float) -> Power:
         return Power(self, index)
 
-    def __abs__(self):
+    def __abs__(self) -> Abs:
         return Abs(self)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.value == None:
             return f"{type(self).__name__}(value=None, grad={self.grad:.4f}, weight={self.weight})"
         return f"{type(self).__name__}(value={self.value:.4f}, grad={self.grad:.4f}, weight={self.weight})"
 
-    def sin(self):
+    def sin(self) -> Sin:
         return Sin(self)
 
-    def cos(self):
+    def cos(self) -> Cos:
         return Cos(self)
 
-    def tanh(self):
+    def tanh(self) -> Tanh:
         return Tanh(self)
 
-    def ReLU(self):
+    def ReLU(self) -> ReLU:
         return ReLU(self)
 
-    def negate(self):
+    def negate(self) -> Negate:
         return Negate(self)
 
-    def exp(self):
+    def exp(self) -> Exp:
         return Exp(self)
 
-    def compute(self):
+    def compute(self) -> None:
         pass
 
     def get_grad(self):
         pass
 
-    def zero_grad(self):
+    def zero_grad(self) -> None:
         self.grad = 0
 
-    def seed_grad(self, seed):
+    def seed_grad(self, seed: int) -> None:
         self.grad = seed
 
-    def set_value(self, new_value):
+    def set_value(self, new_value: int | float):
         assert isinstance(new_value, (float, int))
         self.value = float(new_value)
         self.trigger_recompute()
 
-    def trigger_recompute(self):
+    def trigger_recompute(self) -> None:
         if NodeContext.current_context:
             NodeContext.current_context.recompute()
 
-    def save(self, pickle_instance):
+    def save(self, pickle_instance: Any):
         """
         Saves a `tensorops.node.Node` to a `.pkl` file given a binary file `open()` handle.
 
@@ -107,7 +113,9 @@ class Node:
         pickle.dump(self, pickle_instance)
 
     @staticmethod
-    def load(path, limit=None):
+    def load(
+        path: str, limit: int | None = None
+    ) -> Node | Generator | itertools.chain[Node]:
         """
         Loads a single `tensorops.node.Node()` or a generator of `tensorops.node.Node()`.
 
@@ -118,22 +126,27 @@ class Node:
         Returns:
             Union[Node, Generator[Node, None, None]]: The loaded node(s).
         """
+
         def node_generator():
-            with open(path, 'rb') as f:
+            with open(path, "rb") as f:
                 count = 0
                 while limit is None or count < limit:
                     try:
                         data = pickle.load(f)
                         if isinstance(data, Node):
                             yield data
-                        elif isinstance(data, list) and all(isinstance(item, Node) for item in data):
+                        elif isinstance(data, list) and all(
+                            isinstance(item, Node) for item in data
+                        ):
                             for item in data:
                                 if limit is not None and count >= limit:
                                     return
                                 yield item
                                 count += 1
                         else:
-                            raise ValueError("All items must be of type `tensorops.node.Node` or a list of `Node`.")
+                            raise ValueError(
+                                "All items must be of type `tensorops.node.Node` or a list of `Node`."
+                            )
                         count += 1
                     except EOFError:
                         break
@@ -143,10 +156,10 @@ class Node:
 
         if first_node is None:
             return generator
-        
+
         if limit == 1:
             return first_node
-        
+
         return itertools.chain([first_node], generator)
 
 
@@ -158,18 +171,18 @@ class NodeContext:
 
     current_context = None
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.nodes = []
 
-    def __enter__(self):
+    def __enter__(self) -> NodeContext:
         self.prev_context = NodeContext.current_context
         NodeContext.current_context = self
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
         NodeContext.current_context = self.prev_context
 
-    def add_node(self, node):
+    def add_node(self, node: Node) -> None:
         """
         Creates a node to be added to the computational graph stored in `tensorops.NodeContext.context`
         Args:
@@ -178,13 +191,13 @@ class NodeContext:
 
         self.nodes.append(node)
 
-    def recompute(self):
+    def recompute(self) -> None:
         """
         Recomputes all nodes within the NodeContext.
         """
         forward(self.nodes)
 
-    def weights_enabled(self):
+    def weights_enabled(self) -> list[Node]:
         """
         Returns a list of all nodes that are neural network weights
 
@@ -193,7 +206,7 @@ class NodeContext:
         """
         return [node for node in self.nodes if node.weight]
 
-    def grad_enabled(self):
+    def grad_enabled(self) -> list[Node]:
         """
         Returns a list of all nodes that have gradient tracking enabled.
 
@@ -205,7 +218,7 @@ class NodeContext:
     def __repr__(self) -> str:
         return str([node for node in self.nodes])
 
-    def save(self, path):
+    def save(self, path: str) -> None:
         """
         Saves the `tensorops.node.NodeContext()` to a `.pkl` file.
 
@@ -216,7 +229,7 @@ class NodeContext:
             pickle.dump(self, f)
 
     @staticmethod
-    def load(path):
+    def load(path: str) -> Any:
         """
         Loads a `tensorops.node.NodeContext()` from a `.pkl` file.
 
@@ -229,8 +242,9 @@ class NodeContext:
         with open(path, "rb") as f:
             return pickle.load(f)
 
+
 class Add(Node):
-    def __init__(self, node1, node2):
+    def __init__(self, node1: Node, node2: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.node2 = node2
@@ -238,16 +252,16 @@ class Add(Node):
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = self.node1.value + self.node2.value
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * 1
         self.node2.grad += self.grad * 1
 
 
 class Sub(Node):
-    def __init__(self, node1, node2):
+    def __init__(self, node1: Node, node2: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.node2 = node2
@@ -255,16 +269,16 @@ class Sub(Node):
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = self.node1.value - self.node2.value
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * 1
         self.node2.grad += self.grad * -1
 
 
 class Mul(Node):
-    def __init__(self, node1, node2):
+    def __init__(self, node1: Node, node2: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.node2 = node2
@@ -272,16 +286,16 @@ class Mul(Node):
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = self.node1.value * self.node2.value
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * self.node2.value
         self.node2.grad += self.grad * self.node1.value
 
 
 class Div(Node):
-    def __init__(self, node1, node2):
+    def __init__(self, node1: Node, node2: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.node2 = node2
@@ -289,16 +303,16 @@ class Div(Node):
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = self.node1.value / self.node2.value
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * 1 / self.node2.value
         self.node2.grad += self.grad * -self.node1.value / (self.node2.value**2)
 
 
 class Power(Node):
-    def __init__(self, node1, idx):
+    def __init__(self, node1: Node, idx: int | float) -> None:
         super().__init__(0)
         self.node1 = node1
         self.idx = idx
@@ -306,86 +320,104 @@ class Power(Node):
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = self.node1.value**self.idx
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * self.idx * (self.node1.value ** (self.idx - 1))
 
 
 class Sin(Node):
-    def __init__(self, node1):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = math.sin(self.node1.value)
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * math.cos(self.node1.value)
 
 
 class Cos(Node):
-    def __init__(self, node1):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = math.cos(self.node1.value)
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * -math.sin(self.node1.value)
 
 
 class Tanh(Node):
-    def __init__(self, node1):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = math.tanh(self.node1.value)
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * (1 - (math.tanh(self.node1.value) ** 2))
 
 
-def tanh(node):
+def tanh(node: Node) -> Tanh:
+    """
+    Performs the Tanh (hyperbolic tangent) activation function to given `tensorops.node.Node`.
+
+    Args:
+        node: The input node for Tanh.
+
+    Returns:
+        tensorops.node.Node.Tanh: An instance of Tanh with the value set to the output the Tanh activation function.
+    """
     return Tanh(node)
 
 
 class ReLU(Node):
-    def __init__(self, node1):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = max(0, self.node1.value)
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         if self.node1.value > 0:
             self.node1.grad += self.grad * 1
         elif self.node1.value < 0:
             self.node1.grad += self.grad * 0
 
 
-def relu(node):
+def relu(node: Node) -> ReLU:
+    """
+    Performs the Sigmoid activation function to given `tensorops.node.Node`.
+
+    Args:
+        node: The input node for Sigmoid.
+
+    Returns:
+        tensorops.node.Node.Sigmoid: An instance of Sigmoid with the value set to the output the Sigmoid activation function.
+    """
     return ReLU(node)
 
 
 class LeakyReLU(Node):
-    def __init__(self, node1, leaky_grad=0.01):
+    def __init__(self, node1: Node, leaky_grad: float = 0.01) -> None:
         super().__init__(0)
         assert isinstance(
             leaky_grad, (float, int)
@@ -396,127 +428,173 @@ class LeakyReLU(Node):
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = max(0, self.node1.value) + self.leaky_grad * min(
             0, self.node1.value
         )
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         if self.node1.value > 0:
             self.node1.grad += self.grad * 1
         elif self.node1.value < 0:
             self.node1.grad += self.grad * self.leaky_grad
 
 
-def leaky_relu(node, leaky_grad=0.01):
+def leaky_relu(node: Node, leaky_grad: float = 0.01) -> LeakyReLU:
+    """
+    Performs the LeakyReLU activation function to given `tensorops.node.Node`.
+
+    Args:
+        node (tensorops.node.Node): The input node for LeakyReLU.
+        leaky_grad (float): The negative gradient of the activation function. Defaults to 0.01.
+
+    Returns:
+        tensorops.node.Node.Sigmoid: An instance of Sigmoid with the value set to the output the Sigmoid activation function.
+    """
     return LeakyReLU(node, leaky_grad)
 
 
 class Ramp(Node):
-    def __init__(self, node1):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = math.log(1 + math.exp(-abs(self.node1.value))) + max(
             self.node1.value, 0
         )
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * (1.0 / (1.0 + math.exp(-self.node1.value)))
 
 
-def ramp(node):
+def ramp(node: Node) -> Ramp:
+    """
+    Performs the Softplus activation function to given `tensorops.node.Node`.
+
+    Args:
+        node: The input node for Softplus.
+
+    Returns:
+        tensorops.node.Node.Ramp: An instance of Sigmoid with the value set to the output the Softplus activation function.
+    """
     return Ramp(node)
 
 
-class Negate(Node):
-    def __init__(self, node1):
+class Sigmoid(Node):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
+        self.value = 1.0 / (1.0 + math.exp(-self.node1.value))
+
+    def get_grad(self) -> None:
+        sigmoid_value = self.value
+        self.node1.grad += self.grad * sigmoid_value * (1.0 - sigmoid_value)
+
+
+def sigmoid(node: Node) -> Sigmoid:
+    """
+    Performs the Sigmoid activation function to given `tensorops.node.Node`.
+
+    Args:
+        node: The input node for Sigmoid.
+
+    Returns:
+        tensorops.node.Node.Sigmoid: An instance of Sigmoid with the value set to the output the Sigmoid activation function.
+    """
+    return Sigmoid(node)
+
+
+class Negate(Node):
+    def __init__(self, node1: Node) -> None:
+        super().__init__(0)
+        self.node1 = node1
+        self.parents = [self.node1]
+        for parent in self.parents:
+            parent.children.append(self)
+
+    def compute(self) -> None:
         self.value = self.node1.value * -1
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * -1
 
 
 class Exp(Node):
-    def __init__(self, node1):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = math.exp(self.node1.value)
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         self.node1.grad += self.grad * self.value
 
 
-def exp(node):
+def exp(node: Node) -> Exp:
     return Exp(node)
 
 
 class Abs(Node):
-    def __init__(self, node1):
+    def __init__(self, node1: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.parents = [self.node1]
         for parent in self.parents:
             parent.children.append(self)
 
-    def compute(self):
+    def compute(self) -> None:
         self.value = abs(self.node1.value)
 
-    def get_grad(self):
+    def get_grad(self) -> None:
         if self.node1.value > 0:
             self.node1.grad += self.grad
         elif self.node1.value < 0:
             self.node1.grad += -self.grad
 
 
-class Sigmoid(Node):
-    def __init__(self, node1):
-        super().__init__(0)
-        self.node1 = node1
-        self.parents = [self.node1]
-        for parent in self.parents:
-            parent.children.append(self)
+def forward(nodes: list[Node]) -> None:
+    """
+    Performs the operation
 
-    def compute(self):
-        self.value = 1.0 / (1.0 + math.exp(-self.node1.value))
-
-    def get_grad(self):
-        sigmoid_value = self.value
-        self.node1.grad += self.grad * sigmoid_value * (1.0 - sigmoid_value)
-
-
-def sigmoid(node):
-    return Sigmoid(node)
-
-
-def forward(nodes):
+    Args:
+        nodes:
+    """
     for node in nodes:
         node.compute()
 
 
-def backward(nodes):
+def backward(nodes: list[Node]) -> None:
+    """
+    Performs the operation of backpropagation.
+
+    Args:
+        nodes: The list of nodes to operate backward propagation on.
+    """
     nodes[-1].seed_grad(1)
     for node in reversed(nodes):
         if node.requires_grad:
             node.get_grad()
 
 
-def zero_grad(nodes):
+def zero_grad(nodes: list[Node]) -> None:
+    """
+    Performs the operation of zeroing gradients to all nodes in the list of `tensorops.node.Nodes`.
+
+    Args:
+        nodes: The list of nodes to zero gradients.
+    """
     for node in nodes:
         node.zero_grad()
