@@ -69,7 +69,10 @@ class Model(ABC):
         """
 
     def add_layer(
-        self, num_input_nodes: int, num_output_nodes: int, activation_function: Callable
+        self,
+        num_input_nodes: int,
+        num_output_nodes: int,
+        activation_function: Callable | None,
     ) -> Layer:
         """
         Adds a new layer to the neural network.
@@ -77,7 +80,7 @@ class Model(ABC):
         Args:
             num_input_nodes (int): Number of input nodes to the neural network.
             num_output_nodes (int): Number of output nodes to the neural network.
-            activation_function (callable): A non-linear activation function for the neural network.
+            activation_function (Callable): A non-linear activation function for the neural network.
 
         Returns:
             new_layer (tensorops.model.Layer): The newly created layer of the neural network.
@@ -211,7 +214,7 @@ class Layer:
         context: NodeContext,
         num_input_nodes: int,
         num_output_nodes: int,
-        activation_function: Callable,
+        activation_function: Callable | None,
         seed: int | None = None,
         input_nodes: list[Node] | None = None,
         output_weights: list[list[float]] | None = None,
@@ -328,7 +331,7 @@ class Activation:
         self,
         context: NodeContext,
         num_input_nodes: int,
-        activation_function: Callable,
+        activation_function: Callable | None,
         weights: list[float] | None = None,
         bias: float | None = None,
         seed: int | None = None,
@@ -405,6 +408,6 @@ class Activation:
         {type(self).__name__}(
         {weights_and_inputs_string},
         bias: {self.bias},
-        activation_function: {self.activation_function.__name__}
+        activation_function: {self.activation_function.__name__ if self.activation_function else None}
         )
         """

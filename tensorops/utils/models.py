@@ -1,3 +1,4 @@
+from typing import Callable
 from tensorops.model import Model
 from tensorops.node import Node, NodeContext, forward
 from tensorops.loss import Loss
@@ -5,32 +6,48 @@ from tensorops.loss import Loss
 
 class SimpleSequentialModel(Model):
     """
-    # A simple `tensorops.model.Model` subclass used for demonstration purposes to create a `tensorops.model.Model` without a `tensorops.Model.Layer` class
+    # A simple `tensorops.model.Model` subclass used for demonstration purposes to create a `tensorops.model.Model` without a `tensorops.Model.Layer` class.
+
+    It has a network architecture of y=mx+c. Additional activation functions could be configured.
+
+    Attributes
+    ----------
+    loss_criterion (tensorops.loss.Loss): Cost function of the neural network.
+    activation_function (Optional[Callable]): Optional activation function for the neural network. Defaults to None.
     """
 
-    def __init__(self, loss_criterion: Loss) -> None:
+    def __init__(
+        self, loss_criterion: Loss, activation_function: Callable | None = None
+    ) -> None:
         super().__init__(loss_criterion)
         self.context = NodeContext()
         self.loss_criterion = loss_criterion
         self.model_layers = []
         with self.context:
+            self.activation_function = activation_function
             self.input_node = Node(0.0, requires_grad=False)
-            self.output_node = Node(0.0, requires_grad=False)
+            if self.activation_function:
+                self.output_node = self.activation_function(
+                    Node(0.0, requires_grad=False)
+                )
+            else:
+                self.output_node = Node(0.0, requires_grad=False)
             self.targets = Node(0.0, requires_grad=False)
             self.loss = loss_criterion.loss(self.targets, self.output_node)
 
-    def forward(self, model_inputs: Node) -> Node:
+    def forward(self, model_inputs: Node) -> Node:  # type: ignore
         assert self.output_node, "Output behaviour not defined"
         with self.context:
             self.input_node.set_value(model_inputs.value)
             forward(self.context.nodes)
             return self.output_node
 
-    def calculate_loss(self, output: Node, target: Node) -> Node:
+    def calculate_loss(self, output: Node, target: Node) -> Node:  # type: ignore
         assert self.output_node, "Output behaviour not defined"
         with self.context:
             self.output_node.set_value(output.value)
             self.targets.set_value(target.value)
+            self.input_node.trigger_recompute()
             return self.loss
 
     def __repr__(self) -> str:
@@ -49,7 +66,7 @@ class SequentialModel(Model):
     def __init__(self, loss_criterion: Loss, seed=None) -> None:
         super().__init__(loss_criterion, seed)
 
-    def forward(self, model_inputs: list[Node]) -> list[Node]:
+    def forward(self, model_inputs: list[Node]) -> list[Node]:  # type: ignore
         assert self.input_layer, f"{type(self).__name__}.input_layer not defined!"
         assert self.output_layer, f"{type(self).__name__}.output_layer not defined!"
         assert len(model_inputs) == len(
@@ -60,7 +77,7 @@ class SequentialModel(Model):
                 model_inputs = layer(model_inputs)
         return model_inputs
 
-    def calculate_loss(self, output: Node, target: Node) -> Node:
+    def calculate_loss(self, output: Node, target: Node) -> Node:  # type: ignore
         """
         Calculates the loss between the predicted output from the neural network against the desired output using the cost function set in `tensorops.Model.loss_criterion`.
         Args:
@@ -72,7 +89,7 @@ class SequentialModel(Model):
         """
         with self.context:
             for model_target_nodes, training_target, model_output_nodes, y in zip(
-                self.targets, target, self.output_layer.layer_output_nodes, output
+                self.targets, target, self.output_layer.layer_output_nodes, output  # type: ignore
             ):
                 model_output_nodes.set_value(y.value)
                 model_target_nodes.set_value(training_target.value)

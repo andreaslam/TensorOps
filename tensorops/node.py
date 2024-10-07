@@ -80,7 +80,7 @@ class Node:
     def compute(self) -> None:
         pass
 
-    def get_grad(self):
+    def get_grad(self) -> None | float:
         pass
 
     def zero_grad(self) -> None:
@@ -92,7 +92,7 @@ class Node:
     def set_value(self, new_value: int | float):
         assert isinstance(new_value, (float, int))
         self.value = float(new_value)
-        self.trigger_recompute()
+        # self.trigger_recompute()
 
     def trigger_recompute(self) -> None:
         if NodeContext.current_context:
@@ -567,7 +567,7 @@ class Abs(Node):
 
 def forward(nodes: list[Node]) -> None:
     """
-    Performs the operation
+    Performs the operation of forward pass.
 
     Args:
         nodes:

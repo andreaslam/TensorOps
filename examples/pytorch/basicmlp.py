@@ -70,13 +70,15 @@ if __name__ == "__main__":
         [
             [random.uniform(-2, 2) for _ in range(num_input_nodes)]
             for _ in range(num_datapoints)
-        ], dtype=torch.float64
+        ],
+        dtype=torch.float64,
     )
     y = torch.tensor(
         [
             [random.uniform(0, 1) for _ in range(num_output_nodes)]
             for _ in range(num_datapoints)
-        ], dtype=torch.float64
+        ],
+        dtype=torch.float64,
     )
 
     model = MLP(
