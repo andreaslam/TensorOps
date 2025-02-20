@@ -96,7 +96,7 @@ class AdamW(Optim):
         maximise: bool = False,
         betas: tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
-        weight_decay: float = 0.01,
+        weight_decay: float = 0.0,
         amsgrad: bool = False,
     ) -> None:
         super().__init__(lr, maximise, weight_decay)
@@ -114,8 +114,8 @@ class AdamW(Optim):
         for param in filter(lambda p: p.requires_grad, self.parameters):
             g_t = -param.grad if self.maximise else param.grad
 
-            # if self.weight_decay != 0.0:
-            #     param.value -= self.weight_decay * param.value
+            if self.weight_decay != 0.0:
+                param.value -= self.weight_decay * param.value
 
             self.m[param] = self.betas[0] * self.m[param] + (1 - self.betas[0]) * g_t
             self.v[param] = self.betas[1] * self.v[param] + (1 - self.betas[1]) * (

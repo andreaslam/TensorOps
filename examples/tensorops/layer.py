@@ -37,9 +37,10 @@ class LayerTest(Layer):
             num_input_nodes,
             num_output_nodes,
             activation_function,
-            output_weights,
-            output_bias,
             seed,
+            layer_input_nodes=None,
+            output_weights=output_weights,
+            output_bias=output_bias,
         )
         with self.context:
             self.loss_criterion = loss_criterion
@@ -86,7 +87,12 @@ if __name__ == "__main__":
     loss_plot = PlotterUtil()
 
     layer = LayerTest(
-        NodeContext(), num_input_nodes, num_output_nodes, sigmoid, weights, bias
+        NodeContext(),
+        num_input_nodes,
+        num_output_nodes,
+        sigmoid,
+        output_weights=weights,
+        output_bias=bias,
     )
 
     optim = Adam(layer.context.weights_enabled(), lr=7e-2)

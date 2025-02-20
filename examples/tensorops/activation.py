@@ -81,4 +81,4 @@ if __name__ == "__main__":
                 loss.value, f"{type(activation).__name__}-TensorOps"
             )
 
-    loss_plot.plot()
+    loss_plot.plot(display=False)

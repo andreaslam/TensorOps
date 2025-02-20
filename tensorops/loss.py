@@ -9,7 +9,7 @@ class Loss(ABC):
     """
 
     def __init__(self) -> None:
-        ...
+        self.loss_value = None
 
     @abstractmethod
     def loss(self, actual, target) -> Node:
@@ -17,6 +17,9 @@ class Loss(ABC):
 
     def __call__(self, actual, target) -> Node:
         return self.loss(actual, target)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(value={round(self.loss_value.value, 4) if self.loss_value else None})"
 
 
 class L1Loss(Loss):
@@ -44,10 +47,14 @@ class L1Loss(Loss):
             total_loss = Node(0.0, requires_grad=False)
             for actual_datapoint, target_datapoint in zip(actual, target):
                 total_loss += abs(actual_datapoint - target_datapoint)
-
-            return total_loss / Node(len(actual), requires_grad=False)
+            self.loss_value = total_loss / Node(len(actual), requires_grad=False)
+            return self.loss_value
         else:
-            return abs(actual - target)
+            assert isinstance(actual, Node) and isinstance(
+                target, Node
+            ), f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Node"
+            self.loss_value = abs(actual - target)
+            return self.loss_value
 
 
 class MSELoss(Loss):
@@ -74,7 +81,13 @@ class MSELoss(Loss):
             for actual_datapoint, target_datapoint in zip(actual, target):
                 total_loss = total_loss + ((actual_datapoint - target_datapoint) ** 2)
 
-            loss = total_loss / Node(len(actual), requires_grad=False, weight=False)
-            return loss
+            self.loss_value = total_loss / Node(
+                len(actual), requires_grad=False, weight=False
+            )
+            return self.loss_value
         else:
-            return (target - actual) ** 2
+            assert isinstance(actual, Node) and isinstance(
+                target, Node
+            ), f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Node"
+            self.loss_value = (target - actual) ** 2
+            return self.loss_value

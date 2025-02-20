@@ -2,9 +2,10 @@
 
 
 from tqdm import tqdm
+from tensorops.utils.data import prepare_dataset
 from tensorops.loss import MSELoss
 from tensorops.utils.models import SequentialModel
-from tensorops.node import Node, sigmoid, ramp
+from tensorops.node import relu, sigmoid
 from tensorops.optim import AdamW
 from tensorops.utils.tensorutils import PlotterUtil
 import random
@@ -36,8 +37,8 @@ class MLP(SequentialModel):
 
 
 def training_loop(X_train, y_train, mlp, optim, loss_plot, num_epochs):
-    for _ in tqdm(range(num_epochs), desc="Training MLP"):
-        for X, y in zip(X_train, y_train):
+    for _ in range(num_epochs):
+        for X, y in tqdm(zip(X_train, y_train), desc="Training MLP"):
             mlp.zero_grad()
             outputs = mlp(X)
             loss = mlp.calculate_loss(outputs, y)
@@ -49,28 +50,15 @@ def training_loop(X_train, y_train, mlp, optim, loss_plot, num_epochs):
 if __name__ == "__main__":
     random.seed(42)
 
-    num_epochs = 100
-    num_input_nodes = 2
-    num_hidden_nodes = 8
-    num_hidden_layers = 10
-    num_output_nodes = 1
+    X, y = prepare_dataset("tensorops")
 
-    num_datapoints = 5
+    num_epochs = 1
+    num_input_nodes = len(X[0])
+    num_hidden_nodes = 64
+    num_hidden_layers = 8
+    num_output_nodes = len(y[0])
 
-    X = [
-        [
-            Node(random.uniform(-2, 2), requires_grad=False)
-            for _ in range(num_input_nodes)
-        ]
-        for _ in range(num_datapoints)
-    ]
-    y = [
-        [
-            Node(random.uniform(0, 1), requires_grad=False)
-            for _ in range(num_output_nodes)
-        ]
-        for _ in range(num_datapoints)
-    ]
+    num_datapoints = len(X)
 
     model = MLP(
         MSELoss(),
@@ -78,7 +66,7 @@ if __name__ == "__main__":
         num_output_nodes,
         num_hidden_layers,
         num_hidden_nodes,
-        ramp,
+        relu,
     )
 
     optim = AdamW(model.get_weights(), lr=1e-3)

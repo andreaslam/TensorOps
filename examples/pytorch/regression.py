@@ -6,8 +6,8 @@
 
 
 from tqdm import tqdm
-import torch
 import torch.nn as nn
+from tensorops.utils.data import prepare_dataset
 import torch.optim as optim
 from tensorops.utils.tensorutils import PlotterUtil
 import random
@@ -40,13 +40,16 @@ class MLP(nn.Module):
 
     def forward(self, x):
         for layer in self.layers:
-            x = self.activation_function(layer(x))
+            if self.activation_function:
+                x = self.activation_function(layer(x))
+            else:
+                x = layer(x)
         return x
 
 
 def training_loop(X_train, y_train, mlp, optim, loss_criterion, loss_plot, num_epochs):
-    for _ in tqdm(range(num_epochs), desc="Training MLP"):
-        for X, y in zip(X_train, y_train):
+    for _ in range(num_epochs):
+        for X, y in tqdm(zip(X_train, y_train), desc="Training MLP"):
             optim.zero_grad()
             outputs = mlp(X)
             loss = loss_criterion(outputs, y)
@@ -58,39 +61,26 @@ def training_loop(X_train, y_train, mlp, optim, loss_criterion, loss_plot, num_e
 if __name__ == "__main__":
     random.seed(42)
 
-    num_epochs = 100
-    num_input_nodes = 2
-    num_hidden_nodes = 8
-    num_hidden_layers = 10
-    num_output_nodes = 1
+    X, y = prepare_dataset("pytorch")
 
-    num_datapoints = 5
+    num_epochs = 1
+    num_input_nodes = len(X[0])
+    num_hidden_nodes = 64
+    num_hidden_layers = 8
+    num_output_nodes = len(y[0])
 
-    X = torch.tensor(
-        [
-            [random.uniform(-2, 2) for _ in range(num_input_nodes)]
-            for _ in range(num_datapoints)
-        ],
-        dtype=torch.float64,
-    )
-    y = torch.tensor(
-        [
-            [random.uniform(0, 1) for _ in range(num_output_nodes)]
-            for _ in range(num_datapoints)
-        ],
-        dtype=torch.float64,
-    )
+    num_datapoints = len(X)
 
     model = MLP(
         num_input_nodes,
         num_output_nodes,
         num_hidden_layers,
         num_hidden_nodes,
-        nn.Softplus(),
+        nn.LeakyReLU(),
     )
 
     loss_criterion = nn.MSELoss()
-    optimiser = optim.AdamW(model.parameters(), lr=1e-3)
+    optimiser = optim.AdamW(model.parameters(), lr=1e-4)
 
     loss_plot = PlotterUtil()
 

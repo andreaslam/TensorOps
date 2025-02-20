@@ -36,28 +36,52 @@ class Node:
         if NodeContext.current_context is not None:
             NodeContext.current_context.add_node(self)
 
-    def __add__(self, other: Node) -> Add:
-        return Add(self, other)
+    def __add__(self, other: int | float | Node) -> Add:
+        return Add(self, other if isinstance(other, Node) else Node(other))
 
-    def __mul__(self, other: Node) -> Mul:
-        return Mul(self, other)
+    def __mul__(self, other: int | float | Node) -> Mul:
+        return Mul(self, other if isinstance(other, Node) else Node(other))
 
-    def __sub__(self, other: Node) -> Sub:
-        return Sub(self, other)
+    def __sub__(self, other: int | float | Node) -> Sub:
+        return Sub(self, other if isinstance(other, Node) else Node(other))
 
-    def __truediv__(self, other: Node) -> Div:
-        return Div(self, other)
+    def __truediv__(self, other: int | float | Node) -> Div:
+        return Div(self, other if isinstance(other, Node) else Node(other))
 
-    def __pow__(self, index: int | float) -> Power:
-        return Power(self, index)
+    def __pow__(self, index: int | float | Node) -> Power:
+        return Power(self, index if isinstance(index, Node) else Node(index))
+
+    def __radd__(self, other):
+        return Add(other if isinstance(other, Node) else Node(other), self)
+
+    def __rsub__(self, other):
+        return Sub(other if isinstance(other, Node) else Node(other), self)
+
+    def __rmul__(self, other):
+        return Mul(other if isinstance(other, Node) else Node(other), self)
+
+    def __rtruediv__(self, other):
+        return Div(other if isinstance(other, Node) else Node(other), self)
+
+    def __floordiv__(self, other):
+        return IntDiv(self, other if isinstance(other, Node) else Node(other))
+
+    def __mod__(self, other):
+        return Mod(self, other if isinstance(other, Node) else Node(other))
 
     def __abs__(self) -> Abs:
         return Abs(self)
 
+    def __neg__(self) -> Mul:
+        return Mul(self, Node(-1))
+
     def __repr__(self) -> str:
         if self.value == None:
-            return f"{type(self).__name__}(value=None, grad={self.grad:.4f}, weight={self.weight})"
-        return f"{type(self).__name__}(value={self.value:.4f}, grad={self.grad:.4f}, weight={self.weight})"
+            return f"{type(self).__name__}(value=None, grad={round(self.grad, 4)}, weight={self.weight})"
+        return f"{type(self).__name__}(value={round(self.value, 4)}, grad={round(self.grad, 4)}, weight={self.weight})"
+
+    def __float__(self) -> float:
+        return 0.0 if not self.value else self.value
 
     def sin(self) -> Sin:
         return Sin(self)
@@ -68,8 +92,11 @@ class Node:
     def tanh(self) -> Tanh:
         return Tanh(self)
 
-    def ReLU(self) -> ReLU:
+    def relu(self) -> ReLU:
         return ReLU(self)
+
+    def leaky_relu(self) -> LeakyReLU:
+        return LeakyReLU(self)
 
     def negate(self) -> Negate:
         return Negate(self)
@@ -92,7 +119,6 @@ class Node:
     def set_value(self, new_value: int | float):
         assert isinstance(new_value, (float, int))
         self.value = float(new_value)
-        # self.trigger_recompute()
 
     def trigger_recompute(self) -> None:
         if NodeContext.current_context:
@@ -311,8 +337,43 @@ class Div(Node):
         self.node2.grad += self.grad * -self.node1.value / (self.node2.value**2)
 
 
+class IntDiv(Node):
+    def __init__(self, node1: Node, node2: Node) -> None:
+        super().__init__(0)
+        self.node1 = node1
+        self.node2 = node2
+        self.parents = [self.node1, self.node2]
+        for parent in self.parents:
+            parent.children.append(self)
+
+    def compute(self) -> None:
+        self.value = self.node1.value / self.node2.value
+
+    def get_grad(self) -> None:
+        raise NotImplementedError(
+            "Gradient of tensorops.node.IntDiv operator is not implemented!"
+        )
+
+
+class Mod(Node):
+    def __init__(self, node1: Node, node2: Node) -> None:
+        super().__init__(0)
+        self.node1 = node1
+        self.node2 = node2
+        self.parents = [self.node1, self.node2]
+        for parent in self.parents:
+            parent.children.append(self)
+
+    def compute(self) -> None:
+        self.value = self.node1.value % self.node2.value
+
+    def get_grad(self) -> None:
+        self.node1.grad += self.grad * 1
+        self.node2.grad += self.grad * -(self.node1.value // self.node2.value)
+
+
 class Power(Node):
-    def __init__(self, node1: Node, idx: int | float) -> None:
+    def __init__(self, node1: Node, idx: Node) -> None:
         super().__init__(0)
         self.node1 = node1
         self.idx = idx
@@ -321,10 +382,12 @@ class Power(Node):
             parent.children.append(self)
 
     def compute(self) -> None:
-        self.value = self.node1.value**self.idx
+        self.value = self.node1.value**self.idx.value
 
     def get_grad(self) -> None:
-        self.node1.grad += self.grad * self.idx * (self.node1.value ** (self.idx - 1))
+        self.node1.grad += (
+            self.grad * self.idx.value * (self.node1.value ** (self.idx.value - 1))
+        )
 
 
 class Sin(Node):
@@ -342,6 +405,19 @@ class Sin(Node):
         self.node1.grad += self.grad * math.cos(self.node1.value)
 
 
+def sin(node: Node) -> Sin:
+    """
+    Performs the Sine function to given `tensorops.node.Node`.
+
+    Args:
+        node: The input node for Sine.
+
+    Returns:
+        tensorops.node.Node.Sin: An instance of Sin with the value set to the output the Sine function.
+    """
+    return Sin(node)
+
+
 class Cos(Node):
     def __init__(self, node1: Node) -> None:
         super().__init__(0)
@@ -355,6 +431,19 @@ class Cos(Node):
 
     def get_grad(self) -> None:
         self.node1.grad += self.grad * -math.sin(self.node1.value)
+
+
+def cos(node: Node) -> Cos:
+    """
+    Performs the Cosine function to given `tensorops.node.Node`.
+
+    Args:
+        node: The input node for Cosine.
+
+    Returns:
+        tensorops.node.Node.Cos: An instance of Cos with the value set to the output the Cosine function.
+    """
+    return Cos(node)
 
 
 class Tanh(Node):
@@ -544,6 +633,15 @@ class Exp(Node):
 
 
 def exp(node: Node) -> Exp:
+    """
+    Performs the exponentiation function to given `tensorops.node.Node`.
+
+    Args:
+        node: The input node for exponentiation.
+
+    Returns:
+        tensorops.node.Node.Exp: An instance of Exp with the value set to the output the exponentiation function.
+    """
     return Exp(node)
 
 
@@ -570,7 +668,7 @@ def forward(nodes: list[Node]) -> None:
     Performs the operation of forward pass.
 
     Args:
-        nodes:
+        nodes (list[Node]): The list of nodes to operate forward propagation on.
     """
     for node in nodes:
         node.compute()

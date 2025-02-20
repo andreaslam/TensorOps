@@ -1,0 +1,83 @@
+cmake_minimum_required(VERSION 3.14)
+project(hip_cpu_bindings)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+find_package(OpenMP REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+find_package(pybind11 REQUIRED)
+
+
+add_library(hip_cpu_bindings MODULE 
+    tensorops/bindings.cpp 
+    tensorops/tensor_backend.cpp
+)
+target_include_directories(hip_cpu_bindings PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/../repos/HIP-CPU/include
+)
+
+target_link_libraries(hip_cpu_bindings PRIVATE 
+    pybind11::module
+    OpenMP::OpenMP_CXX
+)
+
+set_target_properties(hip_cpu_bindings PROPERTIES 
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/tensorops"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/tensorops"
+)
+
+
+if(CMAKE_CONFIGURATION_TYPES)
+    foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
+        string(TOUPPER ${CONFIG} CONFIG_UPPER)
+        set_target_properties(hip_cpu_bindings PROPERTIES 
+            LIBRARY_OUTPUT_DIRECTORY_${CONFIG_UPPER} "${CMAKE_SOURCE_DIR}/tensorops"
+            RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER} "${CMAKE_SOURCE_DIR}/tensorops"
+        )
+    endforeach()
+endif()
+
+# Windows-specific settings
+if(WIN32)
+    set_target_properties(hip_cpu_bindings PROPERTIES 
+        PREFIX "" 
+        SUFFIX ".pyd"
+        MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"  
+    )
+    
+    target_compile_options(hip_cpu_bindings PRIVATE 
+        /openmp:experimental 
+        /bigobj             
+    )
+else()
+    set_target_properties(hip_cpu_bindings PROPERTIES 
+        PREFIX "" 
+        SUFFIX ".so"
+    )
+endif()
+
+# Include directories
+target_include_directories(hip_cpu_bindings PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/repos/HIP-CPU/include
+)
+
+
+# Enable C++17 which is required by HIP-CPU
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Define HIP-CPU specific macros
+target_compile_definitions(hip_cpu_bindings PRIVATE
+    __HIP_CPU_RT__
+    __HIP_PLATFORM_CPU__
+)
+
+# Enable OpenMP for HIP-CPU parallel execution
+if(MSVC)
+    target_compile_options(hip_cpu_bindings PRIVATE /openmp:experimental)
+else()
+    target_compile_options(hip_cpu_bindings PRIVATE -fopenmp)
+endif()

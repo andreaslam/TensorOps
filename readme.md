@@ -3,7 +3,8 @@
 # TensorOps
 #### A Work-In-Progress Autograd Library
 
-<img src="https://img.shields.io/badge/Powered%20by-Python-306998" alt="Powered by Python">
+<img src="https://img.shields.io/badge/Powered%20by-Python-yellow" alt="Powered by Python">
+<img src="https://img.shields.io/badge/Powered%20by-C++-blue" alt="Powered by C++">
 <img src="https://badgen.net/github/commits/andreaslam/TensorOps/main" alt="Total commits">
 
 </div>
@@ -13,7 +14,7 @@
 Firstly, to use this repo, use git clone to make the Repository available locally:
 
 ```
-git clone https://github.com/andreaslam/TensorOps
+git clone https://github.com/andreaslam/TensorOps.git
 ```
 
 Then, in a terminal, enter:
@@ -21,6 +22,23 @@ Then, in a terminal, enter:
 ```
 pip install -e .
 ```
+
+## Setting up HIP Backend
+
+Git clone the repo onto the project root and create build folder
+
+```
+git clone https://github.com/ROCm-Developer-Tools/HIP-CPU.git
+cd HIP-CPU
+mkdir build
+cd build
+cmake ..
+cmake --build . --config Release
+
+python setup.py build_ext --inplace --verbose
+python setup.py install
+```
+
 
 ## Getting started with TensorOps
 
@@ -34,9 +52,10 @@ Most examples implemented in the examples folder, will have a corresponding [PyT
 - Forward pass
 - Backward pass
 - Node weight and gradient tracking (enable/disable)
-- Arithmetic operations (BIDMAS, negation, exponentiation)
+- Arithmetic operations (BIDMAS, negation, exponentiation, modulo, [several Python reverse operations](https://docs.python.org/3/reference/datamodel.html#emulating-numeric-types))
 - Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid, ramp)
 - Lazy evaluation
+- HIP Backend (compatible with CUDA, CPU and ROCm backends)
 
 ### Model
 - Mix and match activation functions

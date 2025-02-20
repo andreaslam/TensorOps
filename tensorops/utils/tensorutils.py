@@ -1,12 +1,8 @@
 import matplotlib.pyplot as plt
 import networkx as nx
-import random
-
-plt.style.use("seaborn")
 
 
 class PlotterUtil:
-
     """
     `tensorops.PlotterUtil` is a utility class for plotting graphical data.
 
@@ -58,7 +54,7 @@ class PlotterUtil:
         else:
             self.xs[label].append(len(self.datapoints[label]) - 1)
 
-    def plot(self):
+    def plot(self, save_img=True, img_path="plot.png", display=True):
         """
         Utility function that plots the stored data within the tensorops.PlotterUtil class.
         """
@@ -77,37 +73,25 @@ class PlotterUtil:
         plt.xlabel(self.x_label)
         plt.ylabel(self.y_label)
         plt.legend()
-        plt.show()
-        plt.close()
+        if save_img:
+            plt.savefig(img_path)
+        if display:
+            plt.show()
 
 
-def visualise_graph(nodes):
-    """
-    Utility function that visualises the relationship between nodes as a computational graph.
-
-    The colour scheme is as follows:
-    - Salmon colour if the node is a neural network weight. (`Node.weight=True`)
-    - Pastel blue if the node requires gradient. (`Node.requires_grad = True`)
-    - Pastel green if it does not requires gradient. (`Node.requires_grad = False`)
-
-    Args:
-        nodes (list[tensorops.Node]): The collection nodes to be examined.
-    """
+def visualise_graph(nodes, save_img=True, img_path="graph.png", display=True):
     G = nx.DiGraph()
     labels = {}
     for node in nodes:
         node_id = id(node)
-        if node.value is not None and node.grad is not None:
-            node_label = f"{type(node).__name__}\nVal: {round(node.value, 3)}\nGrad: {round(node.grad, 3)}"
-        else:
-            node_label = f"{type(node).__name__}\nVal: {node.value}\nGrad: {node.grad}"
+        node_label = f"{type(node).__name__}\nVal: {round(node.value,2)}\nGrad: {round(node.grad,2)}"
         labels[node_id] = node_label
         G.add_node(node_id)
         for parent in node.parents:
             parent_id = id(parent)
             G.add_edge(parent_id, node_id)
 
-    pos = nx.spring_layout(G, seed=42)
+    pos = nx.planar_layout(G)
     colourmap = [
         "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
         for (_, node) in zip(G, nodes)
@@ -121,4 +105,7 @@ def visualise_graph(nodes):
         node_color=colourmap,
         font_size=6,
     )
-    plt.show()
+    if save_img:
+        plt.savefig(img_path)
+    if display:
+        plt.show()

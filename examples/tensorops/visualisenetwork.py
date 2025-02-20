@@ -22,5 +22,5 @@ class LinearModel(SimpleSequentialModel):
 
 if __name__ == "__main__":
     linear_model = LinearModel(MSELoss())
-
+    print(linear_model.context.nodes)
     visualise_graph(linear_model.context.nodes)

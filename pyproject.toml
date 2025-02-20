@@ -2,5 +2,14 @@
 name = "TensorOps"
 version = "1.0.0"
 dynamic = ["dependencies"]
+description = "A lightweight Python Autograd engine powered by HIP"
+readme = "readme.md"
+requires-python = ">=3.8"
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+[build-system]
+requires = ["setuptools", "wheel", "pybind11"]
+build-backend = "setuptools.build_meta"
+[project.urls]
+Homepage = "https://github.com/andreaslam/tensorops"
+Issues = "https://github.com/andreaslam/tensorops/issues"

@@ -21,8 +21,8 @@ class Model(ABC):
     model_layers (list[tensorops.model.Layers]): A list containing the all the layers of the neural network.
     targets (tensorops.node.Node): Targets for the model.
     weights (list[tensorops.node.Node]): Contains all the weights of the neural network.
-    input_layer (Union[list[tensorops.model.Layer], None]): The input layer of the neural network. Returns `None` if it is not initialised.
-    output_layer (Union[list[tensorops.model.Layer], None]): The output layer of the neural network. Returns `None` if it is not initialised.
+    model_input_layer (Union[list[tensorops.model.Layer], None]): The input layer of the neural network. Returns `None` if it is not initialised.
+    model_output_layer (Union[list[tensorops.model.Layer], None]): The output layer of the neural network. Returns `None` if it is not initialised.
     loss (Optional[tensorops.node.Node, None]): The output of the loss function. `None` if the loss function/calculation is not defined.
     seed (Optional[int, None], optional): Seed for generating random weights using the `random` library.
     path (string): Path to save and load a model.
@@ -34,8 +34,8 @@ class Model(ABC):
         self.model_layers = []
         self.targets = []
         self.weights = []
-        self.input_layer: Union[Layer, None] = None
-        self.output_layer: Union[Layer, None] = None
+        self.model_input_layer: Union[Layer, None] = None
+        self.model_output_layer: Union[Layer, None] = None
         self.loss = None
         self._prev_layer: list[Layer] | None = None
         self.seed = seed
@@ -88,7 +88,7 @@ class Model(ABC):
 
         if self.model_layers:
             assert (
-                num_input_nodes == self.output_layer.num_output_nodes  # type: ignore
+                num_input_nodes == self.model_output_layer.num_output_nodes  # type: ignore
             ), f"Layer shapes invalid! Expected current layer shape to be ({self.model_layers[-1].num_output_nodes}, n) from previous layer shape ({self.model_layers[-1].num_input_nodes}, {self.model_layers[-1].num_output_nodes})"
         new_layer = Layer(
             self.context,
@@ -96,17 +96,17 @@ class Model(ABC):
             num_output_nodes,
             activation_function,
             seed=self.seed,
-            input_nodes=self._prev_layer,  # type: ignore
+            layer_input_nodes=self._prev_layer,  # type: ignore
         )
         self._prev_layer = new_layer.layer_output_nodes  # type: ignore
-        if not self.input_layer:
-            self.input_layer = new_layer
+        if not self.model_input_layer:
+            self.model_input_layer = new_layer
         self.model_layers.append(new_layer)
-        self.output_layer = self.model_layers[-1]
+        self.model_output_layer = self.model_layers[-1]
 
         self.targets = [
             Node(0.0, requires_grad=False)
-            for _ in range(self.output_layer.num_output_nodes)  # type: ignore
+            for _ in range(self.model_output_layer.num_output_nodes)  # type: ignore
         ]
         self.weights = self.get_weights()
         return new_layer
@@ -202,7 +202,7 @@ class Layer:
     num_output_nodes (int): Number of neurones in the layer.
     activation_function (Optional[Callable]): Non-linear function that determines the activation level of the neurones in the layer based on its input.
     seed (Optional[int, optional]): Optional seed for `random.seed()`.
-    input_nodes (Optional[list[tensorops.node.Node], optional]): A list of `tensorops.node.Node` passed as inputs to the layer.
+    layer_input_nodes (Optional[list[tensorops.node.Node], optional]): A list of `tensorops.node.Node` passed as inputs to the layer.
     output_weights (Optional[list[list[float]], optional]): a m × n matrix of `float`, where m is the number of inputs per `model.Activation` and n is the number of `model.Activation` in a layer.
     output_bias (Optional[list[float], optional]): a list of biases for each `tensorops.model.Activation`.
     layer_output (list[tensorops.model.Activation]): Outputs of neural activation from the layer in the form of `tensorops.model.Activation`.
@@ -216,17 +216,17 @@ class Layer:
         num_output_nodes: int,
         activation_function: Callable | None,
         seed: int | None = None,
-        input_nodes: list[Node] | None = None,
+        layer_input_nodes: list[Node] | None = None,
         output_weights: list[list[float]] | None = None,
         output_bias: list[float] | None = None,
     ):
         self.context = context
         self.num_input_nodes = num_input_nodes
         self.num_output_nodes = num_output_nodes
-        if input_nodes:
-            self.input_nodes = input_nodes
+        if layer_input_nodes:
+            self.layer_input_nodes = layer_input_nodes
         else:
-            self.input_nodes = [
+            self.layer_input_nodes = [
                 Node(0.0, requires_grad=False, weight=False)
                 for _ in range(self.num_input_nodes)
             ]
@@ -260,7 +260,7 @@ class Layer:
                 self.activation_function,
                 activation_weight,
                 activation_bias,
-                input_nodes=self.input_nodes,
+                activation_input_nodes=self.layer_input_nodes,
             )
             for activation_weight, activation_bias in zip(output_weights, output_bias)
         ]
@@ -284,18 +284,18 @@ class Layer:
             len(forward_inputs) == self.num_input_nodes
         ), f"Inputs length {len(forward_inputs)} != number of input nodes of layer {self.num_input_nodes}"
 
-        for node, forward_input in zip(self.input_nodes, forward_inputs):
+        for node, forward_input in zip(self.layer_input_nodes, forward_inputs):
             node.set_value(forward_input.value)
 
-        return [activation(self.input_nodes) for activation in self.layer_output]
+        return [activation(self.layer_input_nodes) for activation in self.layer_output]
 
     def __repr__(self) -> str:
         return f"""
         {type(self).__name__}(
         num_input_nodes = {self.num_input_nodes},
         num_output_nodes = {self.num_output_nodes},
-        weights = {self.weights},
-        bias: {self.bias},
+        weights = {self.weights if self.weights else "[Warning]: No weights initialised yet!"},
+        bias: {self.bias if self.bias else "[Warning]: No bias initialised yet!"},
         activation_function: {self.activation_function.__name__ if self.activation_function else None}
         )
         """
@@ -311,7 +311,7 @@ class Activation:
     Mathematically, a neurone is defined as:
         f(sum(x_i, w_i) + c)
     where:
-        - f() is the non-linear activation function.
+        - f(x) is the non-linear activation function.
         - x_i, w_i are the ith input and weight in a list containing all inputs and weights for the neurone respectively.
         - c is a constant added to the function.
 
@@ -320,7 +320,7 @@ class Activation:
     context (tensorops.node.NodeContext): Context manager to keep track and store nodes for forward and backward pass as a computational graph.
     num_input_nodes (int): Number of neural network inputs for the neurone.
     seed (Optional[int]): Optional seed for `random.seed()`.
-    input_nodes (list[tensorops.node.Node]): Inputs for the neurone.
+    activation_input_nodes (list[tensorops.node.Node]): Inputs for the neurone.
     weights (list[float]): Weights for each input.
     bias (float): Constant added to the function.
     activation_function (Optional[Callable]): Non-linear function that determines the activation level of the neurone based on its input.
@@ -335,7 +335,7 @@ class Activation:
         weights: list[float] | None = None,
         bias: float | None = None,
         seed: int | None = None,
-        input_nodes: list[Node] | None = None,
+        activation_input_nodes: list[Node] | None = None,
     ):
         self.num_input_nodes = num_input_nodes
         self.seed = seed
@@ -343,11 +343,11 @@ class Activation:
             random.seed(self.seed)
         self.context = context
         with self.context:
-            if input_nodes:
-                assert len(input_nodes) == num_input_nodes
-                self.input_nodes = input_nodes
+            if activation_input_nodes:
+                assert len(activation_input_nodes) == num_input_nodes
+                self.activation_input_nodes = activation_input_nodes
             else:
-                self.input_nodes = [
+                self.activation_input_nodes = [
                     Node(0.0, requires_grad=False, weight=False)
                     for _ in range(self.num_input_nodes)
                 ]
@@ -369,7 +369,7 @@ class Activation:
                 self.bias = Node(random.uniform(-1, 1), requires_grad=True, weight=True)
 
             output_node = Node(0.0, requires_grad=True, weight=False)
-            for weight, input_node in zip(self.weights, self.input_nodes):
+            for weight, input_node in zip(self.weights, self.activation_input_nodes):
                 output_node += weight * input_node
 
             if self.activation_function:
@@ -390,7 +390,7 @@ class Activation:
         """
 
         assert len(forward_inputs) == self.num_input_nodes
-        for node, forward_input in zip(self.input_nodes, forward_inputs):
+        for node, forward_input in zip(self.activation_input_nodes, forward_inputs):
             node.set_value(forward_input.value)
         forward(self.context.nodes)
         return self.activation_output
@@ -401,7 +401,9 @@ class Activation:
     def __repr__(self) -> str:
         weights_and_inputs_string = ", ".join(
             f"(weight_{num}: {weight}, input_{num}: {node})"
-            for num, (weight, node) in enumerate(zip(self.weights, self.input_nodes))
+            for num, (weight, node) in enumerate(
+                zip(self.weights, self.activation_input_nodes)
+            )
         )
 
         return f"""

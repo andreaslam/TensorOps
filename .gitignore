@@ -162,7 +162,43 @@ cython_debug/
 #.idea/
 
 # data folder
-
 data/
-
 todo.md
+tensorops/utils/test_engine.py
+repos
+backend.md
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+graph.png
+.DS_Store
