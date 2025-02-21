@@ -453,8 +453,20 @@ class ReLU(UnaryOP):
         self._compute(hip_cpu_bindings.run_vector_relu, reshape)
 
 
-def compute(self, reshape=False) -> None:
-    self._compute(hip_cpu_bindings.run_vector_leakyrelu, reshape)
+class LeakyReLU(UnaryOP):
+    def __init__(self, tensor1, leaky_grad=0.01) -> None:
+        super().__init__(tensor1)
+        self.leaky_grad = leaky_grad
+
+    def compute(self, reshape=False) -> None:
+        if not self.tensor1.flat:
+            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flattened = True
+        self.values = hip_cpu_bindings.run_vector_leakyrelu(
+            self.tensor1.flat, self.leaky_grad
+        )
+        if reshape:
+            self.reshape(self.shape)
 
 
 def relu(x) -> ReLU:

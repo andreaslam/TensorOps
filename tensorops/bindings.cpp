@@ -20,7 +20,7 @@ void flatten(const py::list &nested_list, std::vector<py::object> &flat_list) {
 py::list flatten_list(const py::list &nested_list) {
     std::vector<py::object> flat_vector;
     flatten(nested_list, flat_vector);
-    return py::cast(flat_vector); // Convert vector to Python list
+    return py::cast(flat_vector);
 }
 
 // Recursive function to compute the shape of a nested vector
