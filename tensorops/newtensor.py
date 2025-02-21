@@ -285,23 +285,26 @@ class BinaryOP(OP):
         if self.fuse:
             self.compute()
 
-
-class Add(BinaryOP):
-    def __init__(self, tensor1, tensor2) -> None:
-        super().__init__(tensor1, tensor2)
-
-    def compute(self, reshape=False) -> None:
+    def _compute(self, op, reshape=False):
         if not self.tensor1.flat:
             self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
             self.tensor1.flattened = True
         if not self.tensor2.flat:
             self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
             self.tensor2.flattened = True
-        self.values = hip_cpu_bindings.run_vector_add(
+        self.values = op(
             self.tensor1.flat, self.tensor2.flat
         )
         if reshape:
             self.reshape(self.shape)
+
+
+class Add(BinaryOP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(tensor1, tensor2)
+
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_add, reshape)
 
 
 class Sub(BinaryOP):
@@ -309,17 +312,7 @@ class Sub(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        if not self.tensor2.flat:
-            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
-            self.tensor2.flattened = True
-        self.values = hip_cpu_bindings.run_vector_sub(
-            self.tensor1.flat, self.tensor2.flat
-        )
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_sub, reshape)
 
 
 class ElementMul(BinaryOP):
@@ -327,17 +320,7 @@ class ElementMul(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        if not self.tensor2.flat:
-            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
-            self.tensor2.flattened = True
-        self.values = hip_cpu_bindings.run_vector_element_mul(
-            self.tensor1.flat, self.tensor2.flat
-        )
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_element_mul, reshape)
 
 
 class Div(BinaryOP):
@@ -345,17 +328,7 @@ class Div(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        if not self.tensor2.flat:
-            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
-            self.tensor2.flattened = True
-        self.values = hip_cpu_bindings.run_vector_div(
-            self.tensor1.flat, self.tensor2.flat
-        )
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_div, reshape)
 
 
 class MatMul(BinaryOP):
@@ -404,17 +377,7 @@ class Pow(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        if not self.tensor2.flat:
-            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
-            self.tensor2.flattened = True
-        self.values = hip_cpu_bindings.run_vector_pow(
-            self.tensor1.flat, self.tensor2.flat
-        )
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_pow, reshape)
 
 
 class UnaryOP(OP):
@@ -426,6 +389,14 @@ class UnaryOP(OP):
         if self.fuse:
             self.compute()
 
+    def _compute(self, op, reshape=False):
+        if not self.tensor1.flat:
+            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flattened = True
+        self.values = op(self.tensor1.flat)
+        if reshape:
+            self.reshape(self.shape)
+
 
 class Cos(UnaryOP):
     def __init__(
@@ -435,12 +406,7 @@ class Cos(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        self.values = hip_cpu_bindings.run_vector_cos(self.tensor1.flat)
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_cos, reshape)
 
 
 class Exp(UnaryOP):
@@ -451,12 +417,7 @@ class Exp(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        self.values = hip_cpu_bindings.run_vector_exp(self.tensor1.flat)
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_exp, reshape)
 
 
 class Sin(UnaryOP):
@@ -467,12 +428,7 @@ class Sin(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        self.values = hip_cpu_bindings.run_vector_sin(self.tensor1.flat)
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_sin, reshape)
 
 
 class Tanh(UnaryOP):
@@ -483,12 +439,7 @@ class Tanh(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        self.values = hip_cpu_bindings.run_vector_tanh(self.tensor1.flat)
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_tanh, reshape)
 
 
 class ReLU(UnaryOP):
@@ -499,28 +450,11 @@ class ReLU(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        self.values = hip_cpu_bindings.run_vector_relu(self.tensor1.flat)
-        if reshape:
-            self.reshape(self.shape)
+        self._compute(hip_cpu_bindings.run_vector_relu, reshape)
 
 
-class LeakyReLU(UnaryOP):
-    def __init__(self, tensor1, leaky_grad=0.01) -> None:
-        super().__init__(tensor1)
-        self.leaky_grad = leaky_grad
-
-    def compute(self, reshape=False) -> None:
-        if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
-            self.tensor1.flattened = True
-        self.values = hip_cpu_bindings.run_vector_leakyrelu(
-            self.tensor1.flat, self.leaky_grad
-        )
-        if reshape:
-            self.reshape(self.shape)
+def compute(self, reshape=False) -> None:
+    self._compute(hip_cpu_bindings.run_vector_leakyrelu, reshape)
 
 
 def relu(x) -> ReLU:

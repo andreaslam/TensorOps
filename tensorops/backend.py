@@ -9,7 +9,7 @@ from tensorops.newtensor import Tensor, TensorContext, forward, visualise_graph
 
 def main():
     random.seed(42)
-    n = 4
+    n = 2000
     with TensorContext() as nc:
         start = time.time()
         a = Tensor([[random.random() for _ in range(n * n)]], requires_grad=True)
