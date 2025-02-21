@@ -57,7 +57,7 @@ class Tensor(ABC):
 
         self.grads = None
 
-    def reshape(self, shape) -> None:
+    def reshape(self, shape) -> ShapeOP:
         # support -1 reshaping (unknown)
         shape = (shape,) if isinstance(shape, int) else shape
         assert (
@@ -69,7 +69,8 @@ class Tensor(ABC):
             modified_shape = list(shape)
             modified_shape[modified_shape.index(-1)] = dim_size
             shape = tuple(modified_shape)
-        self.shape = shape
+        return ShapeOP(self, shape)
+        
 
     def flatten(self) -> None:
         self.shape = (reduce(mul, self.shape),)
@@ -234,11 +235,20 @@ class OP(Tensor):
 
     def __repr__(self) -> str:
         display = (
-            f"values={self.values}, requires_grad={self.requires_grad}, weight={self.weight}"
+            f"values={self.values}, requires_grad={self.requires_grad}, weight={self.weight}, self.shape={self.shape}"
             if self.values
-            else f"operands={self.parents}, self.fuse={self.fuse}, requires_grad={self.requires_grad}, self.weight={self.weight}"
+            else f"operands={self.parents}, self.fuse={self.fuse}, requires_grad={self.requires_grad}, self.weight={self.weight}, self.shape={self.shape}"
         )
         return f"{type(self).__name__}({display})"
+
+class ShapeOP(OP):
+    def __init__(self, tensor1, new_shape) -> None:
+        super().__init__([tensor1], True if tensor1.requires_grad else False, False)
+        self.shape = new_shape
+        self.tensor1 = tensor1
+
+    def compute(self, reshape=False) -> None:
+        self.values = self.tensor1.values
 
 
 class BinaryOP(OP):

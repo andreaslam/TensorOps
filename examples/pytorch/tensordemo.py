@@ -46,7 +46,7 @@ def main():
 
     # print(i)
     print(f"took {time.time() - start}s")
-    i.backward(torch.tensor([[1.0] * (n**2)]))
+    # i.backward(torch.tensor([[1.0] * (n**2)]))
 
 
 if __name__ == "__main__":
