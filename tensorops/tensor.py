@@ -187,7 +187,7 @@ def eye(shape):
     return t
 
 
-class Add(Tensor):  
+class Add(Tensor):
     def __init__(
         self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -223,7 +223,7 @@ class Add(Tensor):
         self.reshape(self.output_shape)
 
 
-class Sub(Tensor):  
+class Sub(Tensor):
     def __init__(
         self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -259,7 +259,7 @@ class Sub(Tensor):
         self.reshape(self.output_shape)
 
 
-class ElementMul(Tensor):  
+class ElementMul(Tensor):
     def __init__(
         self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -295,7 +295,7 @@ class ElementMul(Tensor):
         self.reshape(self.output_shape)
 
 
-class Div(Tensor):  
+class Div(Tensor):
     def __init__(
         self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -331,7 +331,7 @@ class Div(Tensor):
         self.reshape(self.output_shape)
 
 
-class Cos(Tensor):  
+class Cos(Tensor):
     def __init__(
         self, tensor1, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -352,7 +352,7 @@ class Cos(Tensor):
         self.reshape(self.output_shape)
 
 
-class Sin(Tensor):  
+class Sin(Tensor):
     def __init__(
         self, tensor1, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -374,7 +374,7 @@ class Sin(Tensor):
         self.reshape(self.output_shape)
 
 
-class Tanh(Tensor):  
+class Tanh(Tensor):
     def __init__(
         self, tensor1, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -396,7 +396,7 @@ class Tanh(Tensor):
         self.reshape(self.output_shape)
 
 
-class ReLU(Tensor):  
+class ReLU(Tensor):
     def __init__(
         self, tensor1, requires_grad: bool = True, weight: bool = False
     ) -> None:
@@ -418,7 +418,7 @@ class ReLU(Tensor):
         self.reshape(self.output_shape)
 
 
-class LeakyReLU(Tensor):  
+class LeakyReLU(Tensor):
     def __init__(
         self, tensor1, requires_grad: bool = True, weight: bool = False
     ) -> None:

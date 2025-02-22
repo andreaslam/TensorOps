@@ -1,5 +1,4 @@
 import os
-from re import X
 import struct
 import gzip
 from urllib.request import urlretrieve

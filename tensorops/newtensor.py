@@ -70,7 +70,6 @@ class Tensor(ABC):
             modified_shape[modified_shape.index(-1)] = dim_size
             shape = tuple(modified_shape)
         return ShapeOP(self, shape)
-        
 
     def flatten(self) -> None:
         self.shape = (reduce(mul, self.shape),)
@@ -174,6 +173,10 @@ class Repeat(Tensor):
         super().__init__(val)
         self.shape = shape
 
+    def compute(self):
+        self.flat = self.values * reduce(mul, self.shape)
+        self.values = self.flat
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}(shape={self.shape}, values={self.values})"
 
@@ -181,6 +184,7 @@ class Repeat(Tensor):
 # Helper Functions for Tensors
 def repeat(val, shape):
     return Repeat(val, shape)
+
 
 def zeros(shape):
     return Repeat(0.0, shape)
@@ -241,13 +245,17 @@ class OP(Tensor):
         )
         return f"{type(self).__name__}({display})"
 
+
 class ShapeOP(OP):
     def __init__(self, tensor1, new_shape) -> None:
         super().__init__([tensor1], True if tensor1.requires_grad else False, False)
         self.shape = new_shape
         self.tensor1 = tensor1
+        self.values = self.tensor1.values
 
     def compute(self, reshape=False) -> None:
+        # the values of the parent node is explictly updated here
+        # this is because if the parent node was previously None, the current node would inherit this and would not be able to get the updated computed value
         self.values = self.tensor1.values
 
 
@@ -286,15 +294,16 @@ class BinaryOP(OP):
             self.compute()
 
     def _compute(self, op, reshape=False):
+        assert isinstance(self.tensor1.values, list) and isinstance(
+            self.tensor2.values, list
+        ), "Values must be realised before compute!"
         if not self.tensor1.flat:
             self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
             self.tensor1.flattened = True
         if not self.tensor2.flat:
             self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
             self.tensor2.flattened = True
-        self.values = op(
-            self.tensor1.flat, self.tensor2.flat
-        )
+        self.values = op(self.tensor1.flat, self.tensor2.flat)
         if reshape:
             self.reshape(self.shape)
 
@@ -390,6 +399,9 @@ class UnaryOP(OP):
             self.compute()
 
     def _compute(self, op, reshape=False):
+        assert isinstance(
+            self.tensor1.values, list
+        ), "Values must be realised before compute!"
         if not self.tensor1.flat:
             self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
             self.tensor1.flattened = True

@@ -18,6 +18,7 @@ operation_mapping = {
     "Div": "Div",
 }
 
+
 class OnnxExporter:
     def __init__(self, ops: list):
         self.ops = ops
@@ -29,7 +30,13 @@ class OnnxExporter:
     def define_op(self, op):
         ids = []
         for tensor in op.parents:
-            self.inputs.append(make_tensor_value_info(op_id:=f"{type(tensor).__name__}_{str(id(tensor))}", TensorProto.FLOAT if tensor.values else TensorProto.UNDEFINED, tensor.shape if tensor.shape else [None]))
+            self.inputs.append(
+                make_tensor_value_info(
+                    op_id := f"{type(tensor).__name__}_{str(id(tensor))}",
+                    TensorProto.FLOAT if tensor.values else TensorProto.UNDEFINED,
+                    tensor.shape if tensor.shape else [None],
+                )
+            )
             ids.append(op_id)
 
         self.nodes.append(
@@ -61,7 +68,6 @@ class OnnxExporter:
 
         model = make_model(graph)
 
-
         check_model(model)
 
         print(model)
@@ -69,10 +75,10 @@ class OnnxExporter:
 
 
 with TensorContext() as nc:
-    a = Tensor([1,2])
-    b = Tensor([3,4])
+    a = Tensor([1, 2])
+    b = Tensor([3, 4])
     c = a * b
-    d = c - Tensor([5,6])
+    d = c - Tensor([5, 6])
     forward(nc.ops)
 
 exp = OnnxExporter(nc.ops)

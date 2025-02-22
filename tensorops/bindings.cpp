@@ -2,6 +2,8 @@
 #include <pybind11/stl.h>
 #include "tensor_backend.hpp"
 #include <iostream>
+#include <vector>
+#include <stdexcept>
 
 namespace py = pybind11;
 
@@ -23,18 +25,25 @@ py::list flatten_list(const py::list &nested_list) {
     return py::cast(flat_vector);
 }
 
-// Recursive function to compute the shape of a nested vector
 std::vector<size_t> get_shape(const py::object& obj) {
     if (py::isinstance<py::list>(obj)) {
         auto list = obj.cast<py::list>();
-        std::vector<size_t> shape = {list.size()};
-        if (!list.empty()) {
-            auto sub_shape = get_shape(list[0]);
-            shape.insert(shape.end(), sub_shape.begin(), sub_shape.end());
+        size_t n = list.size();
+        if (n == 0) {
+            return {0};
         }
+        auto first_shape = get_shape(list[0]);
+        for (size_t i = 1; i < n; i++) {
+            auto current_shape = get_shape(list[i]);
+            if (current_shape != first_shape) {
+                throw std::runtime_error("Non-uniform tensor: shape mismatch in sub-lists");
+            }
+        }
+        std::vector<size_t> shape = {n};
+        shape.insert(shape.end(), first_shape.begin(), first_shape.end());
         return shape;
     }
-    return {}; // Base case: not a list
+    return {};
 }
 
 PYBIND11_MODULE(hip_cpu_bindings, m) {

@@ -96,7 +96,18 @@
         "xutility": "cpp",
         "typeindex": "cpp",
         "unordered_set": "cpp",
-        "valarray": "cpp"
+        "valarray": "cpp",
+        "__bit_reference": "cpp",
+        "__hash_table": "cpp",
+        "__locale": "cpp",
+        "__node_handle": "cpp",
+        "__split_buffer": "cpp",
+        "__verbose_abort": "cpp",
+        "cstdarg": "cpp",
+        "cwctype": "cpp",
+        "print": "cpp",
+        "string_view": "cpp",
+        "__tree": "cpp"
     },
     "cmake.sourceDirectory": "/Users/andreas/Desktop/Code/RemoteFolder/TensorOps"
 }
