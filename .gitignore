@@ -167,6 +167,7 @@ todo.md
 tensorops/utils/test_engine.py
 repos
 backend.md
+*mnist_data
 
 # Prerequisites
 *.d
