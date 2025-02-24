@@ -1,5 +1,5 @@
 import onnx
-from tensorops.newtensor import TensorContext
+from tensor import TensorContext
 from onnx.helper import (
     make_model,
     make_node,
@@ -9,7 +9,7 @@ from onnx.helper import (
 )
 from onnx import TensorProto, load
 from onnx.checker import check_model
-from tensorops.newtensor import *
+from tensor import *
 
 operation_mapping = {
     "Add": "Add",

@@ -1,178 +1,227 @@
-from abc import ABC
+from __future__ import annotations
+from typing import Any
+import pickle
+import matplotlib.pyplot as plt
+import networkx as nx
+from abc import ABC, abstractmethod
 from functools import reduce
-from operator import mul
+from operator import mul, xor
+import hip_cpu_bindings
 
-# import hip_cpu_bindings
-from tensorops.node import Node, cos, leaky_relu, relu, sin, tanh
+# TODO
+# impl forward backend, graph optim and rewrite, cannonicalisation
+# impl saving tensors
+# impl nn essentials, eg softmax, softplus, sigmoid, max, min, argmax, sum, ones, zeros, repeats
+# impl back pass (from node)
+# impl backward backend, kernel allocation
+# docstrings
 
 
 class Tensor(ABC):
     def __init__(
-        self, values, requires_grad: bool = True, weight: bool = False
+        self,
+        values,
+        requires_grad: bool = True,
+        is_op: bool = False,
+        weight: bool = False,
     ) -> None:
-        super().__init__()
-        self.values = values
-        self.shape = None
-        self.tensor1 = None
-        # values could be a Node, list[Node], float, int but not another Tensor
-        if isinstance(
-            self.values, (float, int)
-        ):  # wrap float/int values in a Node first
-            self.values = [
-                Node(self.values, requires_grad=requires_grad, weight=weight)
-            ]
-        elif isinstance(self.values, Node):
-            self.values = [self.values]
-        elif isinstance(self.values, list):
-            self.shape = get_shape(self.values)
-            flat = self.flatten()
-            if all(
-                isinstance(val, (int, float, Node)) for val in flat
-            ):  # allowed datatype
-                self.values = [
-                    (
-                        Node(val, requires_grad=requires_grad, weight=weight)
-                        if isinstance(val, (int, float))
-                        else val
-                    )
-                    for val in flat
-                ]
-                self.reshape(self.shape)
+        self.weight = weight
+        assert xor(bool(values), is_op), "Must be either a valued Tensor or an OP"
+        self.is_op = is_op
+
+        if values:
+            if isinstance(values, (float, int)):
+                self.values = [values]
+            elif isinstance(values, list):
+                self.values = values
             else:
                 raise ValueError("Invalid subtype inside list!")
         else:
-            raise ValueError(
-                f"Tensor must contain either a Node, list[Node], float, int, got {type(self.values).__name__}"
-            )
-        self.shape = get_shape(self.values) if not self.shape else self.shape
-        self.children = []
+            assert isinstance(
+                self, OP
+            ), "Tensor must either have value or is an instance of an OP class!"
+            # OP can init with no values or grad but needs shape
+            self.values = None
+
         self.requires_grad = requires_grad
-        self.weight = weight
-        self.grad = lambda: [
-            value.grad for value in self.flatten()
-        ]  # THIS SHOWS FLATTENED VIEW OF ALL GRADIENTS, THIS MIGHT NOT ACTUALLY REFLECT THE TENSOR'S ACTUAL ORIENTATION OF GRADIENTS
 
-    def compute(self):
-        pass
+        if self.values:
+            self.shape = tuple(hip_cpu_bindings.get_shape(self.values))
+            if len(self.shape) == 1:
+                self.flat = self.values
+            else:
+                self.flat = None
+        else:
+            self.flat = None
+            self.shape = None
+        if self.weight:
+            self.requires_grad = True
 
-    def __getitem__(self, item):
-        return self.values
+        self.grads = None
 
-    def flatten(self):
-        def recursive_flatten(lst):
-            flat_list = []
-            for item in lst:
-                if isinstance(item, list):
-                    flat_list.extend(recursive_flatten(item))
-                else:
-                    flat_list.append(item)
-            get_shape(flat_list)
-            return flat_list
+    def reshape(self, shape) -> ShapeOP:
+        # support -1 reshaping (unknown)
+        shape = (shape,) if isinstance(shape, int) else shape
+        assert (
+            count := shape.count(-1)
+        ) <= 1, f"cannot reshape tensor to shape {shape}"
+        assert len(self) % abs(reduce(mul, shape)) == 0, f"invalid shape {shape}"
+        dim_size = len(self) // abs(reduce(mul, shape))
+        if count == 1:
+            modified_shape = list(shape)
+            modified_shape[modified_shape.index(-1)] = dim_size
+            shape = tuple(modified_shape)
+        return ShapeOP(self, shape)
 
-        return recursive_flatten(self.values)
-
-    def reshape(self, shape):
+    def save(self, path: str):
         """
-        Reshape the flattened list into the specified n-dimensional shape.
+        Saves a `tensorops.tensor.Tensor` to a `.pkl` file given a binary file `open()` handle.
+
+        Passing an instance of the file handle would allow for repeated insertion and saving `tensor.tensor.Tensor` to a `.pkl` file
 
         Args:
-            shape (tuple or list): The target shape as a tuple or list (e.g., (m, n)).
+            path (str): file path to save the pickle instance
+        """
 
-        Raises:
-            ValueError: If the total number of elements does not match the product of dimensions.
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+    @staticmethod
+    def load(path: str):
+        """
+        Loads a single `tensorops.tensor.Tensor()` or a generator of `tensorops.tensor.Tensor()`.
+
+        Args:
+            path (str): The file path from which to load the node(s).
 
         Returns:
-            None: Updates `self.values` and `self.shape` in-place.
+            Tensor: The loaded tensor
         """
-        if not isinstance(shape, (tuple, list)):
-            raise TypeError("Shape must be a tuple or list")
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        return data
 
-        # Calculate total elements in the target shape
-        total_elements_target = reduce(mul, shape, 1)
+    def flatten(self) -> None:
+        self.shape = (reduce(mul, self.shape),)
 
-        # Check if reshaping is possible
-        if len(self.flatten()) != total_elements_target:
-            raise ValueError(
-                f"Cannot reshape list of size {len(self.flatten())} into shape {shape}"
-            )
+    def __add__(self, other) -> Add:
+        return Add(self, other if isinstance(other, Tensor) else Tensor(other))
 
-        def recursive_reshape(flat_list, target_shape):
-            """Recursively reshape a flat list into nested lists matching target shape."""
-            if len(target_shape) == 1:
-                return flat_list[: target_shape[0]]
+    def __radd__(self, other) -> Add:
+        return Add(other if isinstance(other, Tensor) else Tensor(other), self)
 
-            sublist_size = reduce(mul, target_shape[1:], 1)
-            reshaped_list = []
+    def __sub__(self, other) -> Sub:
+        return Sub(self, other if isinstance(other, Tensor) else Tensor(other))
 
-            for i in range(target_shape[0]):
-                start_idx = i * sublist_size
-                end_idx = start_idx + sublist_size
-                reshaped_list.append(
-                    recursive_reshape(flat_list[start_idx:end_idx], target_shape[1:])
-                )
+    def __rsub__(self, other) -> Sub:
+        return Sub(other if isinstance(other, Tensor) else Tensor(other), self)
 
-            return reshaped_list
+    def __mul__(self, other) -> ElementMul:
+        return ElementMul(self, other if isinstance(other, Tensor) else Tensor(other))
 
-        # Perform the reshape operation
-        self.values = recursive_reshape(self.flatten(), shape)
-        self.shape = get_shape(self.values)
+    def __rmul__(self, other) -> ElementMul:
+        return ElementMul(other if isinstance(other, Tensor) else Tensor(other), self)
+
+    def __neg__(self) -> ElementMul:
+        return ElementMul(self, -1)
+
+    def __truediv__(self, other) -> Div:
+        return Div(self, other if isinstance(other, Tensor) else Tensor(other))
+
+    def __rtruediv__(self, other) -> Div:
+        return Div(other if isinstance(other, Tensor) else Tensor(other), self)
+
+    def __matmul__(self, other) -> MatMul:
+        return MatMul(self, other if isinstance(other, Tensor) else Tensor(other))
+
+    def __rmatmul__(self, other) -> MatMul:
+        return MatMul(other if isinstance(other, Tensor) else Tensor(other), self)
+
+    def __pow__(self, other) -> Pow:
+        return Pow(self, other if isinstance(other, Tensor) else Tensor(other))
+
+    def __rpow__(self, other) -> Pow:
+        return Pow(other if isinstance(other, Tensor) else Tensor(other), self)
+
+    def exp(self) -> Exp:
+        return Exp(self)
+
+    def sin(self) -> Sin:
+        return Sin(self)
+
+    def cos(self) -> Cos:
+        return Cos(self)
+
+    def tanh(self) -> Tanh:
+        return Tanh(self)
+
+    def relu(self) -> ReLU:
+        return ReLU(self)
+
+    def leaky_relu(self) -> LeakyReLU:
+        return LeakyReLU(self)
+
+    def seed_grad(self, seed: int) -> None:
+        assert self.values, "Cannot seed gradient, the valued tensor must not be empty!"
+        self.grads = [seed] * len(self.values)
+
+    def squeeze(self):
+        assert self.shape[0] == 1, f"Cannot squeeze tensor shaped {self.shape}"
+        modify_shape = list(self.shape)
+        modify_shape.remove(0)
+        self.shape = tuple(modify_shape)
+
+    def unsqueeze(self, dim):
+        assert dim >= -1 and dim <= len(
+            self.shape
+        ), f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
+        modify_shape = list(self.shape)
+        modify_shape.insert(dim, 1)
+        self.shape = tuple(modify_shape)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(shape={self.shape}, values={self.values}, requires_grad={self.requires_grad}, weight={self.weight})"
+
+    def __len__(self) -> int:
+        return len(self.values) if self.flat else reduce(mul, self.shape)
+
+    def __list__(self) -> list:
+        return self.values if self.values else []
+
+    def __getitem__(self, idx):
+        return self.values[idx]
+
+    def max(self):
+        return max(self.flat if self.flat else self.values)
+
+    def min(self):
+        return max(self.flat if self.flat else self.values)
+
+
+class Repeat(Tensor):
+    def __init__(self, val, shape) -> None:
+        super().__init__(val)
+        self.shape = shape
+
+    def compute(self):
+        self.flat = self.values * reduce(mul, self.shape)
+        self.values = self.flat
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(shape={self.shape}, values={self.values})"
 
-    def __len__(self) -> int:
-        return len(self.flatten())
 
-    def seed_grad(self, seed: int):  # TODO parallelise
-        for f in self.flatten():
-            f.seed_grad(seed)
-
-    def __add__(self, other):
-        return Add(self, other)
-
-    def __sub__(self, other):
-        return Sub(self, other)
-
-    def __mul__(self, other):
-        return ElementMul(self, other)
-
-    def __neg__(self):
-        return ElementMul(self, Node(-1))
-
-    def sin(self):
-        return Sin(self)
-
-    def cos(self):
-        return Cos(self)
-
-    def tanh(self):
-        return Tanh(self)
-
-    def relu(self):
-        return ReLU(self)
-
-    def leaky_relu(self):
-        return LeakyReLU(self)
-
-    def __truediv__(self, other):
-        return Div(self, other)
-
-    def __matmul__(self, other):
-        return MatMul(self, other)
-
-
+# Helper Functions for Tensors
 def repeat(val, shape):
-    t = Tensor([val] * reduce(mul, list(shape), 1))
-    t.reshape(shape)
-    return t
+    return Repeat(val, shape)
 
 
 def zeros(shape):
-    return repeat(0.0, shape)
+    return Repeat(0.0, shape)
 
 
 def ones(shape):
-    return repeat(1.0, shape)
+    return Repeat(1.0, shape)
 
 
 def eye(shape):
@@ -187,341 +236,372 @@ def eye(shape):
     return t
 
 
-class Add(Tensor):
-    def __init__(
-        self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
+class OP(Tensor):
+    def __init__(self, operands, requires_grad, weight) -> None:
+        self.parents = [operands]
+        self.fuse = False
+        needs_grad = [x.requires_grad for x in operands]
+        fuse_condition = (
+            needs_grad == [False, False] or needs_grad == [False]
+        ) and all([x.values for x in operands])
+        super().__init__(
+            None,
+            requires_grad=requires_grad if not fuse_condition else False,
+            weight=weight,
+            is_op=True,
+        )
+        if fuse_condition and TensorContext.current_context is not None:
+            self.fuse = True
+            print("fuse now")
+        else:
+            if TensorContext.current_context is not None:
+                TensorContext.current_context.add_op(self)
+                if operands not in TensorContext.current_context.operands:
+                    TensorContext.current_context.add_operands(operands)
+
+    @abstractmethod
+    def compute(self, reshape=False) -> None:
+        ...
+
+    # @abstractmethod
+    # def get_grad(self):
+    #     ...
+
+    def __repr__(self) -> str:
+        display = (
+            f"values={self.values}, requires_grad={self.requires_grad}, weight={self.weight}, self.shape={self.shape}"
+            if self.values
+            else f"operands={self.parents}, self.fuse={self.fuse}, requires_grad={self.requires_grad}, self.weight={self.weight}, self.shape={self.shape}"
+        )
+        return f"{type(self).__name__}({display})"
+
+
+class ShapeOP(OP):
+    def __init__(self, tensor1, new_shape) -> None:
+        super().__init__([tensor1], True if tensor1.requires_grad else False, False)
+        self.shape = new_shape
+        self.tensor1 = tensor1
+        self.values = self.tensor1.values
+
+    def compute(self, reshape=False) -> None:
+        # the values of the parent node is explictly updated here
+        # this is because if the parent node was previously None, the current node would inherit this and would not be able to get the updated computed value
+        self.values = self.tensor1.values
+
+
+class BinaryOP(OP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(
+            [tensor1, tensor2],
+            False if not tensor1.requires_grad and tensor2.requires_grad else True,
+            False,
+        )
         self.tensor1 = tensor1
         self.tensor2 = tensor2
+
+        self.parents = [self.tensor1, self.tensor2]
+
         original_shape1 = self.tensor1.shape
         original_shape2 = self.tensor2.shape
-        self.tensor1_flat = tensor1.flatten()
-        self.tensor2_flat = tensor2.flatten()
-
-        assert len(self.tensor1) == len(self.tensor2), "Tensor lengths must match!"
-        assert len(self.tensor1_flat) == len(self.tensor2_flat)
-        if original_shape1 != original_shape2:
-            self.output_shape = self.tensor1.shape
-        else:
-            self.output_shape = original_shape1
-
-        super().__init__(
-            [x + y for x, y in zip(self.tensor1_flat, self.tensor2_flat)],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1, tensor2]
-
-    def compute(self):
-        # self.values = [
-        #     x + y for x, y in zip(self.tensor1_flat, self.tensor2_flat)
-        # ]  # TODO check if this line is needed
-        hip_cpu_bindings.run_vector_add(
-            self.tensor1_flat, self.tensor2_flat, self.values
-        )
-        self.reshape(self.output_shape)
-
-
-class Sub(Tensor):
-    def __init__(
-        self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.tensor2 = tensor2
-        original_shape1 = self.tensor1.shape
-        original_shape2 = self.tensor2.shape
-        self.tensor1_flat = tensor1.flatten()
-        self.tensor2_flat = tensor2.flatten()
-
-        assert len(self.tensor1) == len(self.tensor2), "Tensor lengths must match!"
-        assert len(self.tensor1_flat) == len(self.tensor2_flat)
-        if original_shape1 != original_shape2:
-            self.output_shape = self.tensor1.shape
-        else:
-            self.output_shape = original_shape1
-
-        super().__init__(
-            [x - y for x, y in zip(self.tensor1_flat, self.tensor2_flat)],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1, tensor2]
-
-    def compute(self):
-        # self.values = [
-        #     x - y for x, y in zip(self.tensor1_flat, self.tensor2_flat)
-        # ]  # TODO check if this line is needed
-        hip_cpu_bindings.run_vector_sub(
-            self.tensor1_flat, self.tensor2_flat, self.values
-        )
-        self.reshape(self.output_shape)
-
-
-class ElementMul(Tensor):
-    def __init__(
-        self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.tensor2 = tensor2
-        original_shape1 = self.tensor1.shape
-        original_shape2 = self.tensor2.shape
-        self.tensor1_flat = tensor1.flatten()
-        self.tensor2_flat = tensor2.flatten()
-
-        assert len(self.tensor1) == len(self.tensor2), "Tensor lengths must match!"
-        assert len(self.tensor1_flat) == len(self.tensor2_flat)
-        if original_shape1 != original_shape2:
-            self.output_shape = self.tensor1.shape
-        else:
-            self.output_shape = original_shape1
-
-        super().__init__(
-            [x * y for x, y in zip(self.tensor1_flat, self.tensor2_flat)],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1, tensor2]
-
-    def compute(self):
-        # self.values = [
-        #     x * y for x, y in zip(self.tensor1_flat, self.tensor2_flat)
-        # ]  # TODO check if this line is needed
-        hip_cpu_bindings.run_vector_element_mul(
-            self.tensor1_flat, self.tensor2_flat, self.values
-        )
-        self.reshape(self.output_shape)
-
-
-class Div(Tensor):
-    def __init__(
-        self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.tensor2 = tensor2
-        original_shape1 = self.tensor1.shape
-        original_shape2 = self.tensor2.shape
-        self.tensor1_flat = tensor1.flatten()
-        self.tensor2_flat = tensor2.flatten()
-        assert len(self.tensor1) == len(self.tensor2), "Tensor lengths must match!"
-        assert len(self.tensor1_flat) == len(self.tensor2_flat)
+        t1_len = len(self.tensor1)
+        t2_len = len(self.tensor2)
+        self.broadcast = (t1_len != t2_len) and xor(t1_len == 1, t2_len == 1)
+        assert (t1_len == t2_len) or (
+            self.broadcast
+        ), f"Tensor lengths must match! Got {t1_len} and {t2_len}"
 
         if original_shape1 != original_shape2:
-            self.output_shape = self.tensor1.shape
+            self.shape = self.tensor1.shape
         else:
-            self.output_shape = original_shape1
+            self.shape = original_shape1
 
-        super().__init__(
-            [x / y for x, y in zip(self.tensor1_flat, self.tensor2_flat)],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1, tensor2]
+        if self.broadcast:
+            shape_copy = max(self.tensor1, self.tensor2, key=lambda x: len(x))
+            broadcasted = min(self.tensor1, self.tensor2, key=lambda x: len(x))
+            broadcasted.values *= max(t1_len, t2_len)
+            self.shape = shape_copy.shape
+        if self.fuse:
+            self.compute()
 
-    def compute(self):
-        # self.values = [
-        #     x / y for x, y in zip(self.tensor1_flat, self.tensor2_flat)
-        # ]  # TODO check if this line is needed
-        hip_cpu_bindings.run_vector_div(
-            self.tensor1_flat, self.tensor2_flat, self.values
-        )
-        self.reshape(self.output_shape)
-
-
-class Cos(Tensor):
-    def __init__(
-        self, tensor1, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.output_shape = self.tensor1.shape
-        self.tensor1_flat = tensor1.flatten()
-        super().__init__(
-            [cos(x) for x in self.tensor1_flat],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1]
-
-    def compute(self):
-        # self.values = [cos(x) for x in self.tensor1_flat]
-        hip_cpu_bindings.run_vector_cos(self.tensor1_flat, self.values)
-        self.reshape(self.output_shape)
+    def _compute(self, op, reshape=False):
+        assert isinstance(self.tensor1.values, list) and isinstance(
+            self.tensor2.values, list
+        ), "Values must be realised before compute!"
+        if not self.tensor1.flat:
+            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flattened = True
+        if not self.tensor2.flat:
+            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
+            self.tensor2.flattened = True
+        self.values = op(self.tensor1.flat, self.tensor2.flat)
+        if reshape:
+            self.reshape(self.shape)
 
 
-class Sin(Tensor):
-    def __init__(
-        self, tensor1, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.output_shape = self.tensor1.shape
-        self.tensor1_flat = tensor1.flatten()
+class Add(BinaryOP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(tensor1, tensor2)
 
-        super().__init__(
-            [sin(x) for x in self.tensor1_flat],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1]
-
-    def compute(self):
-        # self.values = [sin(x) for x in self.tensor1_flat]
-        hip_cpu_bindings.run_vector_sin(self.tensor1_flat, self.values)
-        self.reshape(self.output_shape)
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_add, reshape)
 
 
-class Tanh(Tensor):
-    def __init__(
-        self, tensor1, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.output_shape = self.tensor1.shape
-        self.tensor1_flat = tensor1.flatten()
+class Sub(BinaryOP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(tensor1, tensor2)
 
-        super().__init__(
-            [tanh(x) for x in self.tensor1_flat],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1]
-
-    def compute(self):
-        # self.values = [tanh(x) for x in self.tensor1_flat]
-        hip_cpu_bindings.run_vector_tanh(self.tensor1_flat, self.values)
-        self.reshape(self.output_shape)
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_sub, reshape)
 
 
-class ReLU(Tensor):
-    def __init__(
-        self, tensor1, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.output_shape = self.tensor1.shape
-        self.tensor1_flat = tensor1.flatten()
+class ElementMul(BinaryOP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(tensor1, tensor2)
 
-        super().__init__(
-            [relu(x) for x in self.tensor1_flat],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1]
-
-    def compute(self):
-        # self.values = [relu(x) for x in self.tensor1_flat]
-        hip_cpu_bindings.run_vector_relu(self.tensor1_flat, self.values)
-        self.reshape(self.output_shape)
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_element_mul, reshape)
 
 
-class LeakyReLU(Tensor):
-    def __init__(
-        self, tensor1, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        # validate inputs
-        self.tensor1 = tensor1
-        self.output_shape = self.tensor1.shape
-        self.tensor1_flat = tensor1.flatten()
+class Div(BinaryOP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(tensor1, tensor2)
 
-        super().__init__(
-            [leaky_relu(x) for x in self.tensor1_flat],
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1]
-
-    def compute(self):
-        # self.values = ([leaky_relu(x) for x in self.tensor1_flat])
-        hip_cpu_bindings.run_vector_leakyrelu(self.tensor1_flat, self.values)
-        self.reshape(self.output_shape)
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_div, reshape)
 
 
-class MatMul(Tensor):
-    def __init__(
-        self, tensor1, tensor2, requires_grad: bool = True, weight: bool = False
-    ) -> None:
-        self.tensor1 = tensor1
-        self.tensor2 = tensor2
+class MatMul(BinaryOP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(tensor1, tensor2)
 
-        # validate matrix shapes based on previous inputs, as self.tensor1 for tensors that have not been computed before yet is flattened
-        # yet those matrices are still able to be multiplied
-        # need to check for those
-        # however there are some matrices that do not have a prior self.tensor1 (such as user-created `Tensor` literals)
-        # those "real" arrays created by users cannot be mistaken for a valid "flattened" array and if they don't match valid sizes, they would fail the assertion below
-
-        if self.tensor1.tensor1:
-            tensor1_mk = list(get_shape(self.tensor1.tensor1.values)[-2:])
-            output_ndims = len(self.tensor1.tensor1.shape)
-        else:
-            tensor1_mk = list(get_shape(self.tensor1.values)[-2:])
-            output_ndims = len(self.tensor1.shape)
-        if self.tensor2.tensor1:
-            tensor2_mk = list(get_shape(self.tensor2.tensor1.values)[-2:])
-        else:
-            tensor2_mk = list(get_shape(self.tensor2.values)[-2:])
+        tensor1_mk = self.tensor1.shape
+        output_ndims = len(self.tensor1.shape)
+        tensor2_mk = self.tensor2.shape
 
         assert (
             tensor1_mk[1] == tensor2_mk[0]
             and len(tensor1_mk) == 2
             and len(tensor2_mk) == 2
-        )
+        ), f"Incorrect shape for MatMul, got {tensor1_mk} and {tensor2_mk}"
         self.m = tensor1_mk[0]
         self.n = tensor2_mk[1]
         self.k = tensor1_mk[1]
-        self.tensor1_flat = self.tensor1.flatten()
-        self.tensor2_flat = self.tensor2.flatten()
-        assert len(self.tensor1_flat) == len(self.tensor2_flat)
-        self.output_shape = tuple(([1] * (output_ndims - 2)) + [self.m, self.n])
-        super().__init__(
-            self.create_matmul_result(
-                self.tensor1_flat, self.tensor2_flat, self.m, self.n, self.k
-            ),
-            requires_grad,
-            weight,
-        )
-        self.parents = [tensor1, tensor2]
+        self.tensor1.flat = self.tensor1.flatten()
+        self.tensor2.flat = self.tensor2.flatten()
 
-    def create_matmul_result(self, tensor1, tensor2, m, n, k):
-        matmul_output = [[None for _ in range(n)] for _ in range(m)]
-        for i in range(m):
-            for j in range(n):
-                result = Node(0.0)
-                for k_idx in range(k):
-                    a_idx = i * k + k_idx
-                    b_idx = k_idx * n + j
-                    product = tensor1[a_idx] * tensor2[b_idx]
-                    result = result + product
-                matmul_output[i][j] = result
-        return matmul_output
+        self.shape = tuple(([1] * (output_ndims - 2)) + [self.m, self.n])
 
-    def compute(self):
-        # self.values = self.create_matmul_result(
-        #     self.tensor1_flat, self.tensor2_flat, self.m, self.n, self.k
-        # )
-        hip_cpu_bindings.run_gemm(
-            self.tensor1_flat,
-            self.tensor2_flat,
-            self.flatten(),
+    def compute(self, reshape=False) -> None:
+        if not self.tensor1.flat:
+            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flattened = True
+        if not self.tensor2.flat:
+            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
+            self.tensor2.flattened = True
+        self.values = hip_cpu_bindings.run_gemm(
+            self.tensor1.flat,
+            self.tensor2.flat,
             self.m,
             self.n,
             self.k,
             1.0,
             0.0,
         )
-        self.reshape(self.output_shape)
+        if reshape:
+            self.reshape(self.shape)
 
 
-def get_shape(value):
-    if isinstance(value, list):
-        if len(value) == 0:
-            return (0,)
-        sub_shapes = [get_shape(sub) for sub in value]
-        if all(shape == sub_shapes[0] for shape in sub_shapes):
-            return (len(value),) + sub_shapes[0]
-        else:
-            raise ValueError("Irregular shapes are not supported")
-    return ()
+class Pow(BinaryOP):
+    def __init__(self, tensor1, tensor2) -> None:
+        super().__init__(tensor1, tensor2)
+
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_pow, reshape)
+
+
+class UnaryOP(OP):
+    def __init__(self, tensor1) -> None:
+        super().__init__([tensor1], True if tensor1.requires_grad else False, False)
+        self.tensor1 = tensor1
+        self.shape = self.tensor1.shape
+        self.parents = [self.tensor1]
+        if self.fuse:
+            self.compute()
+
+    def _compute(self, op, reshape=False):
+        assert isinstance(
+            self.tensor1.values, list
+        ), "Values must be realised before compute!"
+        if not self.tensor1.flat:
+            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flattened = True
+        self.values = op(self.tensor1.flat)
+        if reshape:
+            self.reshape(self.shape)
+
+
+class Cos(UnaryOP):
+    def __init__(
+        self,
+        tensor1,
+    ) -> None:
+        super().__init__(tensor1)
+
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_cos, reshape)
+
+
+class Exp(UnaryOP):
+    def __init__(
+        self,
+        tensor1,
+    ) -> None:
+        super().__init__(tensor1)
+
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_exp, reshape)
+
+
+class Sin(UnaryOP):
+    def __init__(
+        self,
+        tensor1,
+    ) -> None:
+        super().__init__(tensor1)
+
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_sin, reshape)
+
+
+class Tanh(UnaryOP):
+    def __init__(
+        self,
+        tensor1,
+    ) -> None:
+        super().__init__(tensor1)
+
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_tanh, reshape)
+
+
+class ReLU(UnaryOP):
+    def __init__(
+        self,
+        tensor1,
+    ) -> None:
+        super().__init__(tensor1)
+
+    def compute(self, reshape=False) -> None:
+        self._compute(hip_cpu_bindings.run_vector_relu, reshape)
+
+
+class LeakyReLU(UnaryOP):
+    def __init__(self, tensor1, leaky_grad=0.01) -> None:
+        super().__init__(tensor1)
+        self.leaky_grad = leaky_grad
+
+    def compute(self, reshape=False) -> None:
+        if not self.tensor1.flat:
+            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flattened = True
+        self.values = hip_cpu_bindings.run_vector_leakyrelu(
+            self.tensor1.flat, self.leaky_grad
+        )
+        if reshape:
+            self.reshape(self.shape)
+
+
+def relu(x) -> ReLU:
+    return ReLU(x)
+
+
+def leaky_relu(x, leaky_grad=0.01) -> LeakyReLU:
+    return LeakyReLU(x, leaky_grad=leaky_grad)
+
+
+def forward(ops):
+    for op in ops[:-1]:
+        op.compute()
+    ops[-1].compute(True)
+
+
+def backward(ops):
+    ops[-1].seed_grad(1)
+    for op in ops[::-1]:
+        if op.requires_grad:
+            op.get_grad()
+
+
+class TensorContext:
+    """
+    `tensorops.TensorContext` manages the operational context for `Tensor`s during computation.
+    """
+
+    current_context = None
+
+    def __init__(self) -> None:
+        self.ops = []
+        self.operands = []
+
+    def __enter__(self):
+        self.prev_context = TensorContext.current_context
+        TensorContext.current_context = self
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        TensorContext.current_context = self.prev_context
+
+    def add_op(self, op) -> None:
+        """
+        Creates a node to be added to the computational graph stored in `tensorops.TensorContext.context`
+        Args:
+            op (tensorops.OP): The tensor operation to be added to the computational graph
+        """
+        self.ops.append(op)
+
+    def get_flatten(self):
+        return self.operands
+
+    def add_operands(self, operand) -> None:
+        self.operands.extend(operand if isinstance(operand, list) else [operand])
+
+    def __repr__(self) -> str:
+        return str(self.ops)
+
+    def __len__(self) -> int:
+        return len(self.ops)
+
+    def __iter__(self):
+        return iter(self.ops)
+
+
+def visualise_graph(nodes, save_img=True, img_path="graph.png", display=True) -> None:
+    G = nx.DiGraph()
+    labels = {}
+    for node in nodes:
+        node_id = id(node)
+        node_label = f"{type(node).__name__}"
+        labels[node_id] = node_label
+        G.add_node(node_id)
+        for parent in node.parents:
+            parent_id = id(parent)
+            G.add_edge(parent_id, node_id)
+
+    pos = nx.planar_layout(G)
+    colourmap = [
+        "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
+        for (_, node) in zip(G, nodes)
+    ]
+    nx.draw(
+        G,
+        pos,
+        labels=labels,
+        with_labels=True,
+        node_size=800,
+        node_color=colourmap,
+        font_size=6,
+    )
+    if save_img:
+        plt.savefig(img_path)
+    if display:
+        plt.show()

@@ -2,7 +2,7 @@
 name = "TensorOps"
 version = "1.0.0"
 dynamic = ["dependencies"]
-description = "A lightweight Python Autograd engine powered by HIP"
+description = "A Work-In-Progress Autograd Library"
 readme = "readme.md"
 requires-python = ">=3.8"
 [tool.setuptools.dynamic]

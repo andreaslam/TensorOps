@@ -131,7 +131,7 @@ class Node:
         Passing an instance of the file handle would allow for repeated insertion and saving `tensor.node.Node` to a `.pkl` file
 
         Args:
-            pickle_instance (_io.TextIOWrapper): a `.pkl` file handle with write access in binary/
+            pickle_instance (_io.TextIOWrapper): a `.pkl` file handle with write access in binary
         """
 
         assert pickle_instance.writable()

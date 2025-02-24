@@ -202,3 +202,4 @@ backend.md
 *.app
 graph.png
 .DS_Store
+settings.json

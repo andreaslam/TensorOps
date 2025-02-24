@@ -3,7 +3,7 @@ import struct
 import gzip
 from urllib.request import urlretrieve
 
-from tensorops.newtensor import Tensor, TensorContext
+from tensor import Tensor, TensorContext
 
 MNIST_URLS = {
     "train_images": "https://ossci-datasets.s3.amazonaws.com/mnist/train-images-idx3-ubyte.gz",

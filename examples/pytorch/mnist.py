@@ -1,3 +1,10 @@
+# train a neural network on the MNIST dataset to recognise handwritten digits.
+
+# Note that the weights are configured manually using the `init_network_params`, which uses the `random` library to generate seeded weights.
+# This is because `torch.manual_seed` works differently than `random.seed()` and for reproducibility for the `tensorops` version the code will be using `random`.
+# This code is to be used as comparison with examples/tensorops/mnist.py
+
+
 import os
 import struct
 import gzip
@@ -114,30 +121,25 @@ if __name__ == "__main__":
     X_test = torch.tensor(test_images, dtype=torch.float64, device=device) / 255.0
     X_train = X_train.view(-1, 784)
     X_test = X_test.view(-1, 784)
-    
+
     model = MNISTModel(2, 256).to(device)
 
     model.train()
     BATCH_SIZE = 256
     N_EPOCHS = 100
 
-    dataset = TensorDataset(
-        X_train, y_train
-    )  # Removed concatenation of train and test datasets
+    dataset = TensorDataset(X_train, y_train)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     loss_fn = torch.nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=2e-4)
 
-    # Get the dataset size for printing (it is equal to N_SAMPLES)
     dataset_size = len(dataloader.dataset)
 
-    # Loop over epochs
     for epoch in range(N_EPOCHS):
         if epoch % 10 == 0:
             print(f"Epoch {epoch + 1}\n-------------------------------")
 
-        # Loop over batches in an epoch using DataLoader
         for id_batch, (x_batch, y_batch) in enumerate(dataloader):
             y_batch_pred = model(x_batch)
 
@@ -147,13 +149,11 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
-            # Every 100 batches, print the loss for this batch
-            # as well as the number of examples processed so far
             if id_batch % 250 == 0:
                 loss_value = loss.item()
                 current = id_batch * len(x_batch)
                 print(f"Loss: {loss_value:.4f}  [{current:>5d}/{dataset_size:>5d}]")
-    # Evaluation on the test set
+
     model.eval()
     correct = 0
     total = 0

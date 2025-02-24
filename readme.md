@@ -20,12 +20,14 @@ git clone https://github.com/andreaslam/TensorOps.git
 Then, in a terminal, enter:
 
 ```
-pip install -e .
+pip install .
 ```
 
-## Setting up HIP Backend
+## Setting up HIP Backend (Work in Progress)
 
-Git clone the repo onto the project root and create build folder
+Currently, development is done using the HIP-CPU library, which is the drop-in replacement for the HIP backend. All headers in the code would refer to HIP-CPU and not HIP.
+
+Git clone the [HIP-CPU repo](https://github.com/ROCm/HIP-CPU) onto the project root and create build folder
 
 ```
 git clone https://github.com/ROCm-Developer-Tools/HIP-CPU.git
@@ -36,9 +38,8 @@ cmake ..
 cmake --build . --config Release
 
 python setup.py build_ext --inplace --verbose
-python setup.py install
+pip install .
 ```
-
 
 ## Getting started with TensorOps
 
@@ -48,30 +49,38 @@ Most examples implemented in the examples folder, will have a corresponding [PyT
 
 ## TensorOps Features
 
-### Node
+### Node (Deprecating)
 - Forward pass
 - Backward pass
 - Node weight and gradient tracking (enable/disable)
 - Arithmetic operations (BIDMAS, negation, exponentiation, modulo, [several Python reverse operations](https://docs.python.org/3/reference/datamodel.html#emulating-numeric-types))
 - Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid, ramp)
 - Lazy evaluation
-- HIP Backend (compatible with CUDA, CPU and ROCm backends)
 
-### Model
+### Tensor (Work In Progress)
+- Forward pass (Work In Progress)
+- Backward pass (Work In Progress)
+- Node weight and gradient tracking (enable/disable)
+- Arithmetic operations (BIDMAS, negation, exponentiation, modulo, [several Python reverse operations](https://docs.python.org/3/reference/datamodel.html#emulating-numeric-types))
+- Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid, ramp)
+- Lazy evaluation
+- HIP Backend (compatible with CUDA, CPU and AMD GPU backends)
+
+### Model (New Version In Progress)
 - Mix and match activation functions
 - Configurable layer sizes
 - Customisable loss functions
 - Customisable forward passes and general-purpose neural network abstractions
 
-## Loss functions
+## Loss functions (New Version In Progress)
 - Mean Absolute Error
 - Mean Square Error
 
-### Optimisers
+### Optimisers (New Version In Progress)
 - Adam
 - AdamW
 - Stochastic Gradient Descent (SGD)
 
-### Utility features
+### Utility features (New Version In Progress)
 - Function graphing and plotting
 - Colour-coded plotter for Directed Acyclic Graphs (DAGs)
