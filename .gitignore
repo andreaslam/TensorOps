@@ -201,6 +201,8 @@ backend.md
 *.exe
 *.out
 *.app
+
 graph.png
 .DS_Store
 settings.json
+plot.png

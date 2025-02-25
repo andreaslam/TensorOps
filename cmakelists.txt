@@ -5,17 +5,19 @@ project(hip_cpu_bindings)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Check if we're on macOS
 if(APPLE)
-    # Set OpenMP flags and library paths for Clang on macOS
     set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp -lomp")
     set(OpenMP_C_LIB_NAMES "omp")
     set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -lomp")
     set(OpenMP_CXX_LIB_NAMES "omp")
     set(OpenMP_omp_LIBRARY "/opt/homebrew/opt/libomp/lib/libomp.dylib")
     set(OpenMP_INCLUDE_DIRS "/opt/homebrew/opt/libomp/include")
-    include_directories(/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include)
+    include_directories("/usr/local/include" "/usr/local/opt/llvm/include")
+    link_directories("/usr/local/lib" "/usr/local/opt/llvm/lib")
+    include_directories("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include")
     find_package(OpenMP REQUIRED)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
+
 else()
     find_package(OpenMP REQUIRED)
 endif()
@@ -34,22 +36,20 @@ target_include_directories(hip_cpu_bindings PRIVATE
 
 target_link_libraries(hip_cpu_bindings PRIVATE 
     pybind11::module
-    OpenMP::OpenMP_CXX
 )
 
-set_target_properties(hip_cpu_bindings PROPERTIES 
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/tensorops"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/tensorops"
-)
+# macOS specific OpenMP handling
+if(APPLE)
+    # Set OpenMP flags manually
+    set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp")
+    set(OpenMP_C_LIB_NAMES "omp")
+    set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp")
+    set(OpenMP_CXX_LIB_NAMES "omp")
 
-if(CMAKE_CONFIGURATION_TYPES)
-    foreach(CONFIG ${CMAKE_CONFIGURATION_TYPES})
-        string(TOUPPER ${CONFIG} CONFIG_UPPER)
-        set_target_properties(hip_cpu_bindings PROPERTIES 
-            LIBRARY_OUTPUT_DIRECTORY_${CONFIG_UPPER} "${CMAKE_SOURCE_DIR}/tensorops"
-            RUNTIME_OUTPUT_DIRECTORY_${CONFIG_UPPER} "${CMAKE_SOURCE_DIR}/tensorops"
-        )
-    endforeach()
+    # Find OpenMP
+    find_package(OpenMP REQUIRED)
+else()
+    find_package(OpenMP REQUIRED)
 endif()
 
 # Windows-specific settings

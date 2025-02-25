@@ -41,6 +41,8 @@ python setup.py build_ext --inplace --verbose
 pip install .
 ```
 
+The setup on Windows has been replicated successfully but the support for Mac is still in progress. PRs accepted for setup-related issues.
+
 ## Getting started with TensorOps
 
 There are some examples available in the [examples folder](https://github.com/andreaslam/TensorOps/tree/main/examples)

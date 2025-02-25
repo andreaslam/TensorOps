@@ -4,7 +4,7 @@
 import cProfile
 import random
 import time
-from tensorops.tensor import Tensor, TensorContext, forward, visualise_graph
+from tensorops.tensor import Tensor, TensorContext, forward
 
 
 def main():
