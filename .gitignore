@@ -206,3 +206,4 @@ graph.png
 .DS_Store
 settings.json
 plot.png
+*.pkl
