@@ -1,11 +1,11 @@
-#ifndef VECTOR_ADD_HPP
-#define VECTOR_ADD_HPP
+#ifndef TENSOR_BACKEND
+#define TENSOR_BACKEND
 
 #include <vector>
 #include <pybind11/pybind11.h>
 #include <hip/hip_runtime.h>
 
-// Function declarations
+
 void run_vector_add(const std::vector<float>& a,
                     const std::vector<float>& b,
                     std::vector<float>& result);
