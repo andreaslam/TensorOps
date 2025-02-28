@@ -36,12 +36,24 @@ mkdir build
 cd build
 cmake ..
 cmake --build . --config Release
+```
 
+On Windows:
+
+```
 python setup.py build_ext --inplace --verbose
+```
+
+On Mac and Linux:
+```
+python setup.py build_ext --inplace --verbose
+```
+Using a virtual environment is recommended. After setting up the virtual environment, run the following to install relevant dependencies:
+```
 pip install .
 ```
 
-The setup on Windows has been replicated successfully but the support for Mac is still in progress. PRs accepted for setup-related issues.
+Setup support for Mac is still in progress. PRs accepted for setup-related issues.
 
 ## Getting started with TensorOps
 

@@ -17,13 +17,22 @@ if(APPLE)
     include_directories("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include")
     find_package(OpenMP REQUIRED)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
-
 else()
     find_package(OpenMP REQUIRED)
 endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 find_package(pybind11 REQUIRED)
+
+# For non-Windows builds, ensure we use the native (Linux) Python headers.
+if(NOT WIN32)
+    # If the discovered Python3 include directory points to a Windows path (mounted on /mnt/c),
+    # override it with the system Linux include directory.
+    if(Python3_INCLUDE_DIRS MATCHES "/mnt/c/Users")
+        # Adjust the path below to match your system Python version.
+        set(Python3_INCLUDE_DIRS "/usr/include/python3.11")
+    endif()
+endif()
 
 add_library(hip_cpu_bindings MODULE 
     tensorops/bindings.cpp 
@@ -33,6 +42,11 @@ target_include_directories(hip_cpu_bindings PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../repos/HIP-CPU/include
     ${OpenMP_INCLUDE_DIRS}
 )
+
+# On non-Windows, add the Python3 include directories.
+if(NOT WIN32)
+    target_include_directories(hip_cpu_bindings PRIVATE ${Python3_INCLUDE_DIRS})
+endif()
 
 target_link_libraries(hip_cpu_bindings PRIVATE 
     pybind11::module

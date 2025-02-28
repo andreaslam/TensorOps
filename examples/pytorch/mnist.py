@@ -138,7 +138,7 @@ if __name__ == "__main__":
 
     for epoch in range(N_EPOCHS):
         if epoch % 10 == 0:
-            print(f"Epoch {epoch + 1}\n-------------------------------")
+            print(f"Epoch {epoch + 1}")
 
         for id_batch, (x_batch, y_batch) in enumerate(dataloader):
             y_batch_pred = model(x_batch)
@@ -152,7 +152,7 @@ if __name__ == "__main__":
             if id_batch % 250 == 0:
                 loss_value = loss.item()
                 current = id_batch * len(x_batch)
-                print(f"Loss: {loss_value:.4f}  [{current:>5d}/{dataset_size:>5d}]")
+                print(f"Loss: {loss_value:.4f}")
 
     model.eval()
     correct = 0

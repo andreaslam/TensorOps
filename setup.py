@@ -25,7 +25,13 @@ elif sys.platform == "darwin":
         "-stdlib=libc++",
     ]
     extra_link_args = ["-Xpreprocessor", "-lomp", "-L/opt/homebrew/opt/libomp/lib"]
-
+elif sys.platform == "linux":
+    extra_compile_args = [
+        "-std=c++17",
+        "-fopenmp",
+        "-DDEBUG",
+    ]
+    extra_link_args = []
 
 ext_modules = [
     Pybind11Extension(
