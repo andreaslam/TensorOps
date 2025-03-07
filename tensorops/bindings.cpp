@@ -46,7 +46,7 @@ std::vector<size_t> get_shape(const py::object& obj) {
     return {};
 }
 
-PYBIND11_MODULE(hip_cpu_bindings, m) {
+PYBIND11_MODULE(tensorops_hip_bindings, m) {
     m.doc() = "Python bindings for HIP CPU-based vector operations and GEMM";
 
     // Bind vector elementwise operations (add, subtract, multiply, divide)

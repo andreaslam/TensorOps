@@ -6,7 +6,7 @@ import networkx as nx
 from abc import ABC, abstractmethod
 from functools import reduce
 from operator import mul, xor
-import hip_cpu_bindings
+import tensorops_hip_bindings
 
 # TODO
 # impl forward backend, graph optim and rewrite, cannonicalisation
@@ -46,7 +46,7 @@ class Tensor(ABC):
         self.requires_grad = requires_grad
 
         if self.values:
-            self.shape = tuple(hip_cpu_bindings.get_shape(self.values))
+            self.shape = tuple(tensorops_hip_bindings.get_shape(self.values))
             if len(self.shape) == 1:
                 self.flat = self.values
             else:
@@ -260,8 +260,7 @@ class OP(Tensor):
                     TensorContext.current_context.add_operands(operands)
 
     @abstractmethod
-    def compute(self, reshape=False) -> None:
-        ...
+    def compute(self, reshape=False) -> None: ...
 
     # @abstractmethod
     # def get_grad(self):
@@ -328,10 +327,10 @@ class BinaryOP(OP):
             self.tensor2.values, list
         ), "Values must be realised before compute!"
         if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flat = tensorops_hip_bindings.flatten_list(self.tensor1.values)
             self.tensor1.flattened = True
         if not self.tensor2.flat:
-            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
+            self.tensor2.flat = tensorops_hip_bindings.flatten_list(self.tensor2.values)
             self.tensor2.flattened = True
         self.values = op(self.tensor1.flat, self.tensor2.flat)
         if reshape:
@@ -343,7 +342,7 @@ class Add(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_add, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_add, reshape)
 
 
 class Sub(BinaryOP):
@@ -351,7 +350,7 @@ class Sub(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_sub, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_sub, reshape)
 
 
 class ElementMul(BinaryOP):
@@ -359,7 +358,7 @@ class ElementMul(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_element_mul, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_element_mul, reshape)
 
 
 class Div(BinaryOP):
@@ -367,7 +366,7 @@ class Div(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_div, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_div, reshape)
 
 
 class MatMul(BinaryOP):
@@ -393,12 +392,12 @@ class MatMul(BinaryOP):
 
     def compute(self, reshape=False) -> None:
         if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flat = tensorops_hip_bindings.flatten_list(self.tensor1.values)
             self.tensor1.flattened = True
         if not self.tensor2.flat:
-            self.tensor2.flat = hip_cpu_bindings.flatten_list(self.tensor2.values)
+            self.tensor2.flat = tensorops_hip_bindings.flatten_list(self.tensor2.values)
             self.tensor2.flattened = True
-        self.values = hip_cpu_bindings.run_gemm(
+        self.values = tensorops_hip_bindings.run_gemm(
             self.tensor1.flat,
             self.tensor2.flat,
             self.m,
@@ -416,7 +415,7 @@ class Pow(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_pow, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_pow, reshape)
 
 
 class UnaryOP(OP):
@@ -433,7 +432,7 @@ class UnaryOP(OP):
             self.tensor1.values, list
         ), "Values must be realised before compute!"
         if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flat = tensorops_hip_bindings.flatten_list(self.tensor1.values)
             self.tensor1.flattened = True
         self.values = op(self.tensor1.flat)
         if reshape:
@@ -448,7 +447,7 @@ class Cos(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_cos, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_cos, reshape)
 
 
 class Exp(UnaryOP):
@@ -459,7 +458,7 @@ class Exp(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_exp, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_exp, reshape)
 
 
 class Sin(UnaryOP):
@@ -470,7 +469,7 @@ class Sin(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_sin, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_sin, reshape)
 
 
 class Tanh(UnaryOP):
@@ -481,7 +480,7 @@ class Tanh(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_tanh, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_tanh, reshape)
 
 
 class ReLU(UnaryOP):
@@ -492,7 +491,7 @@ class ReLU(UnaryOP):
         super().__init__(tensor1)
 
     def compute(self, reshape=False) -> None:
-        self._compute(hip_cpu_bindings.run_vector_relu, reshape)
+        self._compute(tensorops_hip_bindings.run_vector_relu, reshape)
 
 
 class LeakyReLU(UnaryOP):
@@ -502,9 +501,9 @@ class LeakyReLU(UnaryOP):
 
     def compute(self, reshape=False) -> None:
         if not self.tensor1.flat:
-            self.tensor1.flat = hip_cpu_bindings.flatten_list(self.tensor1.values)
+            self.tensor1.flat = tensorops_hip_bindings.flatten_list(self.tensor1.values)
             self.tensor1.flattened = True
-        self.values = hip_cpu_bindings.run_vector_leakyrelu(
+        self.values = tensorops_hip_bindings.run_vector_leakyrelu(
             self.tensor1.flat, self.leaky_grad
         )
         if reshape:
