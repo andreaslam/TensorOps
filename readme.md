@@ -4,7 +4,7 @@
 #### A Work-In-Progress Autograd Library
 
 <img src="https://img.shields.io/badge/Powered%20by-Python-yellow" alt="Powered by Python">
-<img src="https://img.shields.io/badge/Powered%20by-C++-blue" alt="Powered by C++">
+<img src="https://img.shields.io/badge/Powered%20by-Rust-red" alt="Powered by Rust">
 <img src="https://badgen.net/github/commits/andreaslam/TensorOps/main" alt="Total commits">
 
 </div>
@@ -17,18 +17,30 @@ Firstly, to use this repo, use git clone to make the Repository available locall
 git clone https://github.com/andreaslam/TensorOps.git
 ```
 
-Then, in a terminal, enter:
+At the root of the repository, run:
 
 ```
-pip install .
+pip install -r requirements.txt
 ```
 
-Using a virtual environment is recommended. After setting up the virtual environment, run the following to install relevant dependencies:
+### Building the Backend
+
+To compile the Rust OpenCL backend, `maturin` is needed. If not installed already, run:
+
 ```
-pip install .
+pip install maturin
 ```
 
-Setup support for Mac is still in progress. PRs accepted for setup-related issues.
+Then run:
+```
+cd tensorops
+maturin develop --release
+```
+
+The backend should be installed into 
+
+
+Support for non-OpenCL backend is still in progress. PRs welcome.
 
 ## Getting started with TensorOps
 
