@@ -1,9 +1,15 @@
+# Train a neural network on the MNIST dataset to recognise handwritten digits.
+# This code is to be used as comparison with examples/pytorch/mnist.py
+
+
 import os
 import struct
 import gzip
 from urllib.request import urlretrieve
 
-from tensor import Tensor, TensorContext
+from tensorops.tensor import Tensor, TensorContext, LeakyReLU
+from tensorops.tensormodel import Model
+from tensorops.tensorloss import MSELoss
 
 MNIST_URLS = {
     "train_images": "https://ossci-datasets.s3.amazonaws.com/mnist/train-images-idx3-ubyte.gz",
@@ -73,6 +79,40 @@ def load_mnist():
 
 (train_images, train_labels), (test_images, test_labels) = load_mnist()
 
+
+class MNISTModel(Model):
+    def __init__(
+        self,
+        num_hidden_layers: int,
+        num_hidden_nodes: int,
+        loss_criterion,
+        seed: int | None = None,
+        activation_function=LeakyReLU,
+    ) -> None:
+        super().__init__(loss_criterion, seed)
+        self.activation_function = activation_function
+        self.num_hidden_layers = num_hidden_layers
+        with self.context:
+            self.add_layer(784, num_hidden_nodes, self.activation_function)
+            for _ in range(self.num_hidden_layers):
+                self.add_layer(
+                    num_hidden_nodes, num_hidden_nodes, self.activation_function
+                )
+            self.add_layer(num_hidden_nodes, 10, self.activation_function)
+            self.loss = self.loss_criterion(
+                self.targets, self.model_output_layer.layer_output_tensors
+            )
+
+    def forward(self, model_inputs: Tensor) -> Tensor:
+        with self.context:
+            for layer in self.model_layers:
+                model_inputs = layer(model_inputs)
+        return model_inputs
+
+    def calculate_loss(self, output: Tensor, target: Tensor) -> None | Tensor:
+        pass
+
+
 with TensorContext() as tc:
     X_train, y_train, X_test, y_test = (
         Tensor(train_images, requires_grad=False),
@@ -84,6 +124,8 @@ with TensorContext() as tc:
     print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
 
     # impl model
+
+    model = MNISTModel(2, 256, MSELoss())
     # impl loading
     # impl batching
     # impl backward

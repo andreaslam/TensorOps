@@ -118,5 +118,6 @@
         "source_location": "cpp",
         "strstream": "cpp"
     },
-    "cmake.sourceDirectory": "/Users/andreas/Desktop/Code/RemoteFolder/TensorOps"
+    "cmake.sourceDirectory": "/Users/andreas/Desktop/Code/RemoteFolder/TensorOps",
+    "discord.enabled": true
 }

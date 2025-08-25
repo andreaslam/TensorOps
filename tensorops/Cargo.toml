@@ -1,0 +1,20 @@
+[package]
+name = "tensorops_backend"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tensorops_backend"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ocl = "0.19.7"
+lazy_static = "1.4.0"
+
+[dependencies.pyo3]
+version = "0.24.1"
+features = ["extension-module"]
+
+[[bin]]
+name = "tensorops_backend_rust"
+path = "src/main.rs"

@@ -23,31 +23,6 @@ Then, in a terminal, enter:
 pip install .
 ```
 
-## Setting up HIP Backend (Work in Progress)
-
-Currently, development is done using the HIP-CPU library, which is the drop-in replacement for the HIP backend. All headers in the code would refer to HIP-CPU and not HIP.
-
-Git clone the [HIP-CPU repo](https://github.com/ROCm/HIP-CPU) onto the project root and create build folder
-
-```
-git clone https://github.com/ROCm-Developer-Tools/HIP-CPU.git
-cd HIP-CPU
-mkdir build
-cd build
-cmake ..
-cmake --build . --config Release
-```
-
-On Windows:
-
-```
-python setup.py build_ext --inplace --verbose
-```
-
-On Mac and Linux:
-```
-python setup.py build_ext --inplace --verbose
-```
 Using a virtual environment is recommended. After setting up the virtual environment, run the following to install relevant dependencies:
 ```
 pip install .
@@ -72,13 +47,13 @@ Most examples implemented in the examples folder, will have a corresponding [PyT
 - Lazy evaluation
 
 ### Tensor (Work In Progress)
-- Forward pass (Work In Progress)
-- Backward pass (Work In Progress)
-- Node weight and gradient tracking (enable/disable)
+- Weight and gradient tracking (enable/disable)
 - Arithmetic operations (BIDMAS, negation, exponentiation, modulo, [several Python reverse operations](https://docs.python.org/3/reference/datamodel.html#emulating-numeric-types))
 - Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid, ramp)
 - Lazy evaluation
-- HIP Backend (compatible with CUDA, CPU and AMD GPU backends)
+- OpenCL Backend
+- Partial graph execution
+- Kernel fusion
 
 ### Model (New Version In Progress)
 - Mix and match activation functions

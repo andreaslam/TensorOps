@@ -1,4 +1,4 @@
-# train a neural network on the MNIST dataset to recognise handwritten digits.
+# Train a neural network on the MNIST dataset to recognise handwritten digits.
 
 # Note that the weights are configured manually using the `init_network_params`, which uses the `random` library to generate seeded weights.
 # This is because `torch.manual_seed` works differently than `random.seed()` and for reproducibility for the `tensorops` version the code will be using `random`.
