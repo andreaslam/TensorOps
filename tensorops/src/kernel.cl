@@ -207,12 +207,12 @@ __kernel void VecLeakyReLU(__global const float* A,
 }
 
 /*
- * VecSumNew: Reduction sum along an axis.
+ * VecSum: Reduction sum along an axis.
  *
  * Treats input as shape [pre_axis, axis_len, post_axis]
  * and outputs shape [pre_axis, post_axis].
  */
-__kernel void VecSumNew(__global const float* input,
+__kernel void VecSum(__global const float* input,
                         __global float* output,
                         float pre_axis_f,
                         float axis_len_f,
@@ -238,12 +238,12 @@ __kernel void VecSumNew(__global const float* input,
 }
 
 /*
- * VecMaxNew: Reduction max along an axis.
+ * VecMax: Reduction max along an axis.
  *
  * Treats input as shape [pre_axis, axis_len, post_axis]
  * and outputs shape [pre_axis, post_axis].
  */
-__kernel void VecMaxNew(__global const float* input,
+__kernel void VecMax(__global const float* input,
                         __global float* output,
                         float pre_axis_f,
                         float axis_len_f,
@@ -270,12 +270,12 @@ __kernel void VecMaxNew(__global const float* input,
 }
 
 /*
- * VecMinNew: Reduction min along an axis.
+ * VecMin: Reduction min along an axis.
  *
  * Treats input as shape [pre_axis, axis_len, post_axis]
  * and outputs shape [pre_axis, post_axis].
  */
-__kernel void VecMinNew(__global const float* input,
+__kernel void VecMin(__global const float* input,
                         __global float* output,
                         float pre_axis_f,
                         float axis_len_f,

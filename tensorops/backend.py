@@ -169,6 +169,19 @@ class Kernel:
             expand_op = self.op[0]
             parent = expand_op.tensor1
 
+            def _describe_tensor(t) -> str:
+                # Avoid calling __repr__ / .values (can materialize huge buffers)
+                try:
+                    shape = getattr(t, "shape", None)
+                except Exception:
+                    shape = None
+                return (
+                    f"{type(t).__name__}(shape={shape}, is_op={getattr(t, 'is_op', False)}, "
+                    f"has__values={getattr(t, '_values', None) is not None}, "
+                    f"has__flat={getattr(t, '_flat', None) is not None}, "
+                    f"has_pending={getattr(t, '_pending_kernel_result', None) is not None})"
+                )
+
             src_shape = list(getattr(expand_op, "src_shape", None) or parent.shape)
             tgt_shape = list(expand_op.shape)
             if src_shape is None or tgt_shape is None:
@@ -192,16 +205,7 @@ class Kernel:
 
             kernel_name = f"VecExpand_{self.kernel_id}"
             rank = len(tgt_shape)
-            if not hasattr(tensorops_backend, "get_kernel_source_by_name"):
-                raise RuntimeError(
-                    "tensorops_backend.get_kernel_source_by_name is required for ExpandOP; rebuild/upgrade the Rust backend"
-                )
-
             template = tensorops_backend.get_kernel_source_by_name("VecExpandTemplate")
-            if not template:
-                raise RuntimeError(
-                    "VecExpandTemplate not found in backend kernel.cl; rebuild/upgrade the Rust backend"
-                )
 
             custom_src_for_rust = re.sub(
                 r"#define\s+RANK\s+\d+",
@@ -233,25 +237,43 @@ class Kernel:
                 TensorContext.current_context, "_exec_lim_kernels", 0
             )
             if source_kernel_id is not None and source_kernel_id >= exec_lim_kernels:
-                source_kernel_op_list = TensorContext.current_context.kernels[
-                    source_kernel_id
-                ]
-                try:
-                    source_output_idx = source_kernel_op_list.index(actual_parent)
-                except ValueError:
-                    raise Exception(
-                        f"ExpandOP parent {actual_parent} not found in producing kernel op list (kernel {source_kernel_id})."
+                ctx = TensorContext.current_context
+                source_output_idx = None
+                output_index_maps = getattr(ctx, "_kernel_output_index", None)
+                if output_index_maps is not None and source_kernel_id < len(
+                    output_index_maps
+                ):
+                    source_output_idx = output_index_maps[source_kernel_id].get(
+                        actual_parent
                     )
+                if source_output_idx is None:
+                    source_kernel_op_list = ctx.kernels[source_kernel_id]
+                    try:
+                        source_output_idx = source_kernel_op_list.index(actual_parent)
+                    except ValueError:
+                        raise Exception(
+                            f"ExpandOP parent not found in producing kernel op list (kernel {source_kernel_id}): {_describe_tensor(actual_parent)}"
+                        )
                 py_inputs.append(
                     tensorops_backend.LogicalInputSource(
                         source_kernel_id, source_output_idx
                     )
                 )
-            elif parent.values is not None:
-                py_inputs.append(tensorops_backend.DirectInput(parent.flat))
+            elif (
+                getattr(actual_parent, "_values", None) is not None
+                or getattr(actual_parent, "_flat", None) is not None
+            ):
+                # Use host data only if it is already present; do not trigger lazy materialization.
+                host_flat = getattr(actual_parent, "_flat", None)
+                host_values = getattr(actual_parent, "_values", None)
+                py_inputs.append(
+                    tensorops_backend.DirectInput(
+                        host_flat if host_flat is not None else host_values
+                    )
+                )
             else:
                 raise Exception(
-                    f"ExpandOP parent {actual_parent} not found in kernel_lookup (kernel {self.kernel_id}) and has no host values."
+                    f"ExpandOP parent not found in kernel_lookup (kernel {self.kernel_id}) and has no host values: {_describe_tensor(actual_parent)}"
                 )
 
             # Small metadata buffers (floats; cast to int in kernel)
@@ -267,7 +289,6 @@ class Kernel:
             py_inputs.append(
                 tensorops_backend.DirectInput([float(x) for x in tgt_strides])
             )
-
             return tensorops_backend.KernelTensorOps(
                 kernel_type=kernel_type_obj,
                 kernel_id=self.kernel_id,
@@ -339,28 +360,46 @@ class Kernel:
                 TensorContext.current_context, "_exec_lim_kernels", 0
             )
             if source_kernel_id is not None and source_kernel_id >= exec_lim_kernels:
-                source_kernel_op_list = TensorContext.current_context.kernels[
-                    source_kernel_id
-                ]
-                try:
-                    source_output_idx = source_kernel_op_list.index(
+                ctx = TensorContext.current_context
+                source_output_idx = None
+                output_index_maps = getattr(ctx, "_kernel_output_index", None)
+                if output_index_maps is not None and source_kernel_id < len(
+                    output_index_maps
+                ):
+                    source_output_idx = output_index_maps[source_kernel_id].get(
                         actual_op_for_lookup
                     )
-                except ValueError:
-                    print(
-                        f"Error details: actual_op_for_lookup={actual_op_for_lookup}, type={type(actual_op_for_lookup)}, source_kernel_id={source_kernel_id}, source_kernel_op_list={[str(o) for o in source_kernel_op_list]}"
-                    )
-                    raise Exception(
-                        f"Parent OP {actual_op_for_lookup} (logical input to kernel {self.kernel_id}) "
-                        f"not found in its own producing kernel's op list (kernel {source_kernel_id})."
-                    )
+                if source_output_idx is None:
+                    source_kernel_op_list = ctx.kernels[source_kernel_id]
+                    try:
+                        source_output_idx = source_kernel_op_list.index(
+                            actual_op_for_lookup
+                        )
+                    except ValueError:
+                        print(
+                            f"Error details: actual_op_for_lookup={actual_op_for_lookup}, type={type(actual_op_for_lookup)}, source_kernel_id={source_kernel_id}, source_kernel_op_list={[str(o) for o in source_kernel_op_list]}"
+                        )
+                        raise Exception(
+                            f"Parent OP {actual_op_for_lookup} (logical input to kernel {self.kernel_id}) "
+                            f"not found in its own producing kernel's op list (kernel {source_kernel_id})."
+                        )
                 py_inputs.append(
                     tensorops_backend.LogicalInputSource(
                         source_kernel_id, source_output_idx
                     )
                 )
-            elif input_tensor.values is not None:
-                py_inputs.append(tensorops_backend.DirectInput(input_tensor.flat))
+            elif (
+                getattr(actual_op_for_lookup, "_values", None) is not None
+                or getattr(actual_op_for_lookup, "_flat", None) is not None
+            ):
+                # Use host data only if it is already present; do not trigger lazy materialization.
+                host_flat = getattr(actual_op_for_lookup, "_flat", None)
+                host_values = getattr(actual_op_for_lookup, "_values", None)
+                py_inputs.append(
+                    tensorops_backend.DirectInput(
+                        host_flat if host_flat is not None else host_values
+                    )
+                )
             else:
                 raise Exception(
                     f"Logical input {actual_op_for_lookup} (kernel {self.kernel_id}) not found in kernel_lookup and has no host values."
@@ -378,148 +417,145 @@ class Kernel:
         return f"Kernel(kernel_id={self.kernel_id}, num_ops={len(self.op)}, type={self.op})"
 
 
+DEBUG_FUSION_KERNEL_SRC = False
+
+
 class Fusor:
     def __init__(self, fuse_ops: List[OP]) -> None:
         assert all(isinstance(op, OP) for op in fuse_ops), (
             "All items in fuse_ops must be OP instances"
         )
-        self.fuse_ops = fuse_ops  # List of OP objects to be fused
+        self.fuse_ops = fuse_ops
         self.kernel_name = "custom_fused_" + uuid.uuid4().hex[:10]
         self.kernel_instructions: str | None = None
 
     def build_kernel(self) -> Tuple[str, str]:
-        """
-        Builds the complete, fused OpenCL kernel source code.
+        """Build the fused OpenCL kernel source.
 
-        Each operation in the fusion group writes its result to a dedicated output buffer.
-        These buffers can then be read by subsequent operations within the same kernel execution.
-        The kernel signature lists input buffers first, then all output buffers.
+        Note: We still emit one global output buffer per op so downstream kernels
+        (including backward graph ops) can reference intermediates. The key perf
+        win here is computing intermediates into local temps and writing them once
+        (so later ops reuse registers instead of re-reading from global memory).
         """
         if self.kernel_instructions:
             return self.kernel_instructions, self.kernel_name
 
-        # input_vars_map: Maps external tensor IDs to their kernel buffer names (e.g., v_xyz)
-        input_vars_map: Dict[int, str] = {}
-        # op_output_buffer_map: Maps internal op IDs to their dedicated output buffer names (e.g., output_buf_0)
         op_output_buffer_map: Dict[int, str] = {
             id(op): f"output_buf_{i}" for i, op in enumerate(self.fuse_ops)
         }
 
-        fused_instructions_body: List[str] = []
+        # External inputs are any parent tensors not produced inside this fused kernel.
+        # Keep the same ordering strategy as Kernel.convert_kernel (sorted by id).
+        external_input_ids: List[int] = []
+        external_seen: set[int] = set()
+        for op in self.fuse_ops:
+            for parent in op.parents:
+                pid = id(parent)
+                if pid in op_output_buffer_map:
+                    continue
+                if pid not in external_seen:
+                    external_seen.add(pid)
+                    external_input_ids.append(pid)
+        external_input_ids.sort()
+
+        input_vars_map: Dict[int, str] = {
+            pid: f"v_in_{i}" for i, pid in enumerate(external_input_ids)
+        }
+
+        op_temp_var_map: Dict[int, str] = {}
+        fused_body: List[str] = []
 
         for i, op_instance in enumerate(self.fuse_ops):
             op_type = type(op_instance)
             kernel_enum_val = op_map.get(op_type)
             snippet_rhs = pattern.get(kernel_enum_val)
-
             if not snippet_rhs:
                 raise NotImplementedError(
                     f"Operation {op_type.__name__} is not supported in fusion or its snippet is missing."
                 )
 
-            current_op_snippet = snippet_rhs
+            expr = snippet_rhs
 
-            # Resolve input variables for the current op_instance
-            # These are the actual kernel variable names (v_... for external, output_buf_... for internal)
-            resolved_input_kernel_vars: List[str] = []
-            for parent_tensor_obj in op_instance.parents:
-                parent_id = id(parent_tensor_obj)
-
-                if parent_id in op_output_buffer_map:
-                    # Input is from a preceding op_instance in the same fused kernel
-                    var_name = op_output_buffer_map[parent_id]
-                elif parent_id in input_vars_map:
-                    # Input is an external tensor, already mapped to a kernel input variable
-                    var_name = input_vars_map[parent_id]
+            # Parent value expressions in parent order.
+            parent_exprs: List[str] = []
+            for parent in op_instance.parents:
+                pid = id(parent)
+                if pid in op_output_buffer_map:
+                    temp = op_temp_var_map.get(pid)
+                    if temp is not None:
+                        parent_exprs.append(temp)
+                    else:
+                        parent_exprs.append(f"{op_output_buffer_map[pid]}[gid]")
                 else:
-                    # This is a new external tensor input for the kernel
-                    var_name = f"v_in_{uuid.uuid4().hex[:8]}"
-                    input_vars_map[parent_id] = var_name
+                    parent_exprs.append(f"{input_vars_map[pid]}[gid]")
 
-                resolved_input_kernel_vars.append(var_name)
+            # Substitute placeholders like A[gid], B[gid] according to parent order.
+            raw_placeholders = re.findall(r"\b([a-zA-Z_]+)\[gid\]", expr)
+            placeholders: List[str] = []
+            for ph in raw_placeholders:
+                if ph not in placeholders:
+                    placeholders.append(ph)
 
-            # Substitute placeholders like a[gid], b[gid] in the snippet
-            # Placeholders in snippets are assumed to be 'a', 'b', etc., matching parent order
-            placeholders_in_snippet = re.findall(
-                r"\b([a-zA-Z_]+)\[gid\]", current_op_snippet
-            )
-            for placeholder_idx, placeholder_base_name in enumerate(
-                placeholders_in_snippet
-            ):
-                if placeholder_idx < len(resolved_input_kernel_vars):
-                    replacement_kernel_var = resolved_input_kernel_vars[placeholder_idx]
-                    # Replace specific placeholder e.g., "a[gid]" with "v_in_xxxx[gid]" or "output_buf_y[gid]"
-                    current_op_snippet = re.sub(
-                        r"\b" + re.escape(placeholder_base_name) + r"\[gid\]",
-                        f"{replacement_kernel_var}[gid]",
-                        current_op_snippet,
-                        count=1,  # Replace one by one to maintain order
-                    )
-                else:
+            for idx, ph in enumerate(placeholders):
+                if idx >= len(parent_exprs):
                     raise ValueError(
-                        f"Not enough input variables for placeholders in snippet for {op_type.__name__}"
+                        f"Not enough inputs for placeholders in snippet for {op_type.__name__}"
                     )
-
-            # Special handling for 'val' (often used in unary op snippets, refers to the first parent)
-            if re.search(r"\bval\b", current_op_snippet) and resolved_input_kernel_vars:
-                first_input_var = resolved_input_kernel_vars[0]
-                # 'val' in snippet implies access to the buffer element at current gid
-                current_op_snippet = re.sub(
-                    r"\bval\b", f"{first_input_var}[gid]", current_op_snippet
+                expr = re.sub(
+                    r"\b" + re.escape(ph) + r"\[gid\]", parent_exprs[idx], expr
                 )
 
-            # Special handling for LeakyReLU's alpha parameter
-            # Assumes alpha is the second parent and passed as a 1-element buffer.
-            if isinstance(op_instance, LeakyReLU):
-                if len(resolved_input_kernel_vars) > 1:
-                    alpha_buffer_kernel_name = resolved_input_kernel_vars[
-                        1
-                    ]  # Kernel name for the buffer holding alpha
-                    # Snippet uses 'alpha'; replace with access to the first (and only) element of that buffer
-                    current_op_snippet = re.sub(
-                        r"\balpha\b",
-                        f"{alpha_buffer_kernel_name}[0]",
-                        current_op_snippet,
+            # Some unary snippets use 'val' rather than A[gid].
+            if re.search(r"\bval\b", expr) and parent_exprs:
+                expr = re.sub(r"\bval\b", parent_exprs[0], expr)
+
+            # GenericLog snippet uses scalar token 'base'. In fusion we pass base as a 1-element buffer.
+            if isinstance(op_instance, GenericLog):
+                base_parent = op_instance.parents[0]
+                base_id = id(base_parent)
+                if base_id in op_output_buffer_map:
+                    base_expr = op_temp_var_map.get(
+                        base_id, f"{op_output_buffer_map[base_id]}[gid]"
                     )
                 else:
-                    raise ValueError(
-                        "LeakyReLU expects a second parent for its alpha value in fusion."
+                    base_expr = f"{input_vars_map[base_id]}[0]"
+                expr = re.sub(r"\bbase\b", base_expr, expr)
+
+            # LeakyReLU snippet uses scalar token 'alpha'. In fusion we pass alpha as a 1-element buffer.
+            if isinstance(op_instance, LeakyReLU):
+                if len(op_instance.parents) < 2:
+                    raise ValueError("LeakyReLU expects alpha as a second parent")
+                alpha_parent = op_instance.parents[1]
+                alpha_id = id(alpha_parent)
+                if alpha_id in op_output_buffer_map:
+                    alpha_expr = op_temp_var_map.get(
+                        alpha_id, f"{op_output_buffer_map[alpha_id]}[gid]"
                     )
+                else:
+                    alpha_expr = f"{input_vars_map[alpha_id]}[0]"
+                expr = re.sub(r"\balpha\b", alpha_expr, expr)
 
-            # The result of this op_instance is written to its dedicated output buffer
-            current_op_output_buffer_name = op_output_buffer_map[id(op_instance)]
-            instruction_line = (
-                f"    {current_op_output_buffer_name}[gid] = {current_op_snippet};"
-            )
-            fused_instructions_body.append(instruction_line)
+            out_buf = op_output_buffer_map[id(op_instance)]
+            temp_name = f"t{i}"
+            fused_body.append(f"    float {temp_name} = {expr};")
+            fused_body.append(f"    {out_buf}[gid] = {temp_name};")
+            op_temp_var_map[id(op_instance)] = temp_name
 
-        # Assemble the full kernel source string
+        # Kernel signature: external input buffers, then one output buffer per op.
         kernel_declaration = f"__kernel void {self.kernel_name}(\n"
-        kernel_argument_declarations: List[str] = []
-
-        # Ensure stable order for input buffer arguments from input_vars_map
-        # Sort by the original tensor ID (the key in input_vars_map)
-
-        sorted_external_input_vars = sorted(input_vars_map.items())
-        for _, var_name in sorted_external_input_vars:
-            kernel_argument_declarations.append(f"    __global const float* {var_name}")
-
-        # Output buffer arguments (one for each op in the fusion, order based on self.fuse_ops)
-        sorted_output_buffer_names = [
-            op_output_buffer_map[id(op)] for op in self.fuse_ops
-        ]
-        for name in sorted_output_buffer_names:
-            kernel_argument_declarations.append(f"    __global float* {name}")
-
-        gid_setup = "\n) {\n    int gid = get_global_id(0);\n"
-        kernel_body_str = "\n".join(fused_instructions_body)
-        kernel_end = "\n}\n"
+        kernel_args: List[str] = []
+        for pid in external_input_ids:
+            kernel_args.append(f"    __global const float* {input_vars_map[pid]}")
+        for op in self.fuse_ops:
+            kernel_args.append(f"    __global float* {op_output_buffer_map[id(op)]}")
 
         self.kernel_instructions = (
             kernel_declaration
-            + ",\n".join(kernel_argument_declarations)
-            + gid_setup
-            + kernel_body_str
-            + kernel_end
+            + ",\n".join(kernel_args)
+            + "\n) {\n    int gid = get_global_id(0);\n"
+            + "\n".join(fused_body)
+            + "\n}\n"
         )
+        if DEBUG_FUSION_KERNEL_SRC:
+            print(self.kernel_instructions)
         return self.kernel_instructions, self.kernel_name

@@ -220,9 +220,9 @@ impl Runtime {
 
                 let name = match &kernel_info.kernel_type {
                     KernelType::Predefined(pk) => match pk {
-                        PredefinedKernel::VecSum => "VecSumNew".to_string(),
-                        PredefinedKernel::VecMax => "VecMaxNew".to_string(),
-                        PredefinedKernel::VecMin => "VecMinNew".to_string(),
+                        PredefinedKernel::VecSum => "VecSum".to_string(),
+                        PredefinedKernel::VecMax => "VecMax".to_string(),
+                        PredefinedKernel::VecMin => "VecMin".to_string(),
                         _ => pk.to_string(),
                     },
                     KernelType::Custom(cn) => cn.clone(),

@@ -4,8 +4,8 @@ import math
 import pickle
 from abc import ABC, abstractmethod
 from functools import reduce
-from itertools import chain
 from operator import mul, xor
+from typing import Optional
 
 import tensorops_backend
 
@@ -20,7 +20,7 @@ class Tensor(ABC):
     def __init__(
         self,
         values,
-        enable_fusion: bool = False,
+        enable_fusion: bool = True,
         requires_grad: bool = True,
         is_op: bool = False,
         weight: bool = False,
@@ -56,24 +56,68 @@ class Tensor(ABC):
 
         if self._values is not None:
             self.memview, self._shape = tensorops_backend.tensor_from_list(self._values)
-            self.flat = list(self.memview)
+            self._flat = list(self.memview)
         else:
-            self.flat = None
+            self._flat = None
         if self.weight:
             self.requires_grad = True
         self.capacity = reduce(mul, self._shape, 1) if self._shape is not None else None
         # Gradients are allocated lazily to reduce peak memory usage.
         self.grads = None
 
+        # Lazy result distribution (set on OPs by TensorContext.distribute_results).
+        self._pending_kernel_result = None
+        self._pending_kernel_op_index = None
+        self._pending_ctx = None
+
+    @property
+    def flat(self):
+        if self.is_op and self._pending_kernel_result is not None:
+            # Trigger lazy materialization on first access
+            _ = self.values
+        return self._flat
+
+    @flat.setter
+    def flat(self, value):
+        self._flat = value
+
     @property
     def values(self):
+        # Lazy distribution: populate this op if it has pending backend results.
+        if self.is_op and self._pending_kernel_result is not None:
+            ctx = self._pending_ctx or TensorContext.current_context
+            kernel_result = self._pending_kernel_result
+            op_idx = self._pending_kernel_op_index
+
+            if op_idx is None:
+                raise RuntimeError("Pending kernel op index is missing")
+
+            if ctx is None:
+                raise RuntimeError(
+                    "Cannot materialize pending results without an active TensorContext"
+                )
+
+            cached = ctx._kernel_val_cache.get(id(kernel_result))
+            if cached is None:
+                cached = kernel_result.val
+                ctx._kernel_val_cache[id(kernel_result)] = cached
+
+            result = cached[op_idx]
+
+            self._flat = result
+            self.memview = None
+            self._values = result
+
+            self._pending_kernel_result = None
+            self._pending_kernel_op_index = None
+            self._pending_ctx = None
         return self._values
 
     @values.setter
     def values(self, new_value):
         if new_value is None:
             self._values = None
-            self.flat = None
+            self._flat = None
             self.memview = None
             return
 
@@ -87,7 +131,7 @@ class Tensor(ABC):
                     f"Value length {len(new_value)} does not match tensor shape {self.shape} (expected {expected})"
                 )
             if not new_value or not isinstance(new_value[0], list):
-                self.flat = new_value
+                self._flat = new_value
                 self.memview = None
                 self._values = new_value
                 return
@@ -106,7 +150,7 @@ class Tensor(ABC):
                     f"Value length {len(new_value)} does not match tensor shape {self.shape} (expected {expected})"
                 )
 
-        self.flat = list(memview)
+        self._flat = list(memview)
         self.memview = memview
         self._values = new_value
 
@@ -254,7 +298,7 @@ class Tensor(ABC):
 
         # Rust backend path
         if hasattr(tensorops_backend, "tensor_expand"):
-            new_values = tensorops_backend.tensor_expand(
+            new_values = tensorops_backend.tensor_expand(  # type: ignore[attr-defined]
                 list(data), list(current_shape), list(shape)
             )
             return Tensor(new_values, requires_grad=self.requires_grad).reshape(shape)
@@ -475,12 +519,16 @@ class Tensor(ABC):
         return LeakyReLU(self, leaky_grad)
 
     def seed_grad(self, seed: int) -> None:
-        assert self.values, (
-            f"Cannot seed gradient, the valued tensor must not be empty! {self}"
-        )
-        self.grads = Tensor(
-            [seed] * len(self.values), requires_grad=False, grad_tensor=True
-        )
+        # Seed gradients without forcing value materialization.
+        cap = self.capacity
+        if cap is None:
+            vals = self.values
+            if not vals:
+                raise ValueError(
+                    f"Cannot seed gradient, the tensor must not be empty! {self}"
+                )
+            cap = len(vals)
+        self.grads = Tensor([seed] * cap, requires_grad=False, grad_tensor=True)
         if self.shape is not None:
             self.grads.shape = self.shape
 
@@ -502,7 +550,14 @@ class Tensor(ABC):
         return f"{type(self).__name__}(shape={self.shape}, values={self.values}, requires_grad={self.requires_grad}, weight={self.weight})"
 
     def __len__(self) -> int:
-        return len(self.flat) if self.values else self.capacity
+        # Avoid forcing lazy materialization.
+        if self._flat is not None:
+            return len(self._flat)
+        if self.capacity is not None:
+            return self.capacity
+        if self._values is not None:
+            return len(self._values)
+        return 0
 
     def __list__(self) -> list:
         return self.values if self.values else []
@@ -558,13 +613,16 @@ def ones(shape):
 
 def eye(shape):
     assert len(shape) == 2 or len(shape) == 1, "shape must be 2D or 1D"
-    t = Tensor(
-        [
-            1.0 if i % (shape[0]) == (i // shape[0]) else 0.0
-            for i in range(self.capacity if len(shape) == 2 else shape[0] ** 2)
-        ]
-    )
-    t.reshape(shape if len(shape) == 2 else (shape[0], shape[0]))
+    if len(shape) == 1:
+        n = shape[0]
+        rows, cols = n, n
+    else:
+        rows, cols = shape
+
+    cap = rows * cols
+    flat = [1.0 if (i % cols) == (i // cols) else 0.0 for i in range(cap)]
+    t = Tensor(flat, requires_grad=False)
+    t.reshape((rows, cols))
     return t
 
 
@@ -572,8 +630,15 @@ class OP(Tensor):
     def __init__(self, operands, requires_grad, weight) -> None:
         self.parents = [operands]
         self.parent_data_tensors = all(parent.values for parent in operands)
+
+        def _unwrap_shapeop(t: Tensor) -> Tensor:
+            # ShapeOP is a view/metadata op; treat it as transparent for fusion decisions.
+            while type(t).__name__ == "ShapeOP":
+                t = getattr(t, "tensor1", t)
+            return t
+
         self.fusable_op = all(
-            parent.enable_fusion for parent in operands
+            _unwrap_shapeop(parent).enable_fusion for parent in operands
         )  # whether the kernel would exclude the op from being fused
         self.available_during_exec = False
         super().__init__(
@@ -604,9 +669,31 @@ class ShapeOP(OP):
         self.parents = [tensor1]
         self.shape = new_shape
         self.tensor1 = tensor1
-        self.values = self.tensor1.values
-        self.flat = self.tensor1.flat
+        # Shape/view ops must never be fused into arithmetic kernels.
+        # They do not have a kernel snippet and are handled as cheap views.
+        self.fusable_op = False
+        # Don't copy values/flat here - let properties handle it dynamically
         self.capacity = self.tensor1.capacity
+
+    @property
+    def values(self):
+        # Dynamically reference parent to support lazy loading
+        return self.tensor1.values
+
+    @values.setter
+    def values(self, new_value):
+        # ShapeOP doesn't own data, just redirect to parent
+        self.tensor1.values = new_value
+
+    @property
+    def flat(self):
+        # Dynamically reference parent to support lazy loading
+        return self.tensor1.flat
+
+    @flat.setter
+    def flat(self, value):
+        # ShapeOP doesn't own data, just redirect to parent
+        self.tensor1.flat = value
 
     def get_grad(self) -> None:
         if self.requires_grad and self.tensor1.requires_grad:
@@ -668,6 +755,9 @@ class ReduceOP(OP):
 
         super().__init__([tensor1], True if tensor1.requires_grad else False, False)
         self.parents = [tensor1]
+
+        # Reduce ops are not elementwise and cannot be fused by the current Fusor.
+        self.fusable_op = False
 
         self.shape = tuple(new_shape)
         self.capacity = reduce(mul, self.shape, 1)
@@ -1007,6 +1097,10 @@ class TensorContext:
         self.all_custom_instructions = []
         self.completed_kernels = []
 
+        # Lazy result distribution cache: map KernelResult identity -> Python lists.
+        # This avoids repeated expensive Rust->Python conversions for fused kernels.
+        self._kernel_val_cache = {}
+
     def __enter__(self):
         self.prev_context = TensorContext.current_context
         TensorContext.current_context = self
@@ -1050,8 +1144,31 @@ class TensorContext:
     def finalise(self, lim=0, lim_kernels=0):
         from tensorops.backend import Fusor, Kernel
 
+        def _unwrap_shapeop_parent(p):
+            # ShapeOP is metadata-only; treat it as transparent for dependency tracking.
+            while type(p).__name__ == "ShapeOP":
+                p = getattr(p, "tensor1", p)
+            return p
+
         for op in self.ops[lim:]:
-            op_parents = [p for p in op.parents if isinstance(p, OP)]
+            # ShapeOP is a view op (reshape). It has no kernel and should not
+            # create a "locked" fusion boundary. Map it to its underlying
+            # producer kernel (if any) and skip kernel creation.
+            if type(op).__name__ == "ShapeOP":
+                parent = getattr(op, "tensor1", None)
+                parent = _unwrap_shapeop_parent(parent)
+                if isinstance(parent, OP) and parent in self.kernel_lookup:
+                    self.kernel_lookup[op] = self.kernel_lookup[parent]
+                op.available_during_exec = True
+                continue
+
+            op_parents = []
+            for p in op.parents:
+                if not isinstance(p, OP):
+                    continue
+                unwrapped = _unwrap_shapeop_parent(p)
+                if isinstance(unwrapped, OP):
+                    op_parents.append(unwrapped)
 
             parent_kernel_indices = set()
             parents_found_in_kernels = True
@@ -1121,6 +1238,14 @@ class TensorContext:
                 op.available_during_exec = True
                 self.kernel_number += 1
 
+        # Build fast lookup maps for producing-kernel output indices.
+        # This avoids repeated O(n) list.index() scans when wiring LogicalInputSource
+        # dependencies inside Kernel.convert_kernel().
+        self._kernel_output_index = [
+            {op: idx for idx, op in enumerate(kernel_ops)}
+            for kernel_ops in self.kernels
+        ]
+
         # build custom instructions for fused kernels
         for i, k in zip(
             (
@@ -1148,21 +1273,57 @@ class TensorContext:
         self.completed_kernels = [op for k in self.kernels for op in k]
 
     def backward(self):
-        # find all kernels that do not have dependencies associated with it
-        deps = set(
-            chain.from_iterable(v for v in self.kernel_dependencies.values() if v)
-        )
-        no_deps = set(range(self.kernel_number)).difference(deps)
-        for i, k in enumerate(self.kernels):
-            if i in no_deps:
-                for op in k:
-                    op.seed_grad(1.0)
+        # Seed gradients for true graph outputs only.
+        #
+        # Important: when fusion is enabled, a single kernel can contain many ops.
+        # Seeding *all* ops in a sink kernel (no downstream kernel deps) is wrong
+        # and corrupts gradients. Instead, seed only ops that are not consumed by
+        # any other op in the current (forward) graph.
+        forward_ops = list(self.ops)
+        consumed: set[OP] = set()
+        for op in forward_ops:
+            if not isinstance(op, OP):
+                continue
+            for parent in getattr(op, "parents", []) or []:
+                if isinstance(parent, OP):
+                    consumed.add(parent)
+
+        output_ops = [
+            op for op in forward_ops if isinstance(op, OP) and op not in consumed
+        ]
+        for op in output_ops:
+            op.seed_grad(1)
+
         backward_graph_start = len(
             self.ops
         )  # use self.ops because this is where the ops accumulate during gradient graph building
         backward_kernel_start = len(self.kernels_objs)  # kernel index before backward
         for op in filter(lambda o: o.requires_grad, self.ops[::-1]):
             op.get_grad()
+
+        # Backward is executed as a separate graph submission (execute_ops with lim_kernels).
+        # That means backward kernels cannot reference forward kernel outputs via
+        # LogicalInputSource (those kernels won't be re-executed). Materialize only the
+        # forward tensors that are actually referenced by the backward graph.
+        def _unwrap_shapeop_parent(p):
+            while type(p).__name__ == "ShapeOP":
+                p = getattr(p, "tensor1", p)
+            return p
+
+        needed_forward_tensors: set[OP] = set()
+        for bop in self.ops[backward_graph_start:]:
+            if not isinstance(bop, OP):
+                continue
+            for parent in getattr(bop, "parents", []) or []:
+                parent = _unwrap_shapeop_parent(parent)
+                if (
+                    isinstance(parent, OP)
+                    and getattr(parent, "_pending_kernel_result", None) is not None
+                ):
+                    needed_forward_tensors.add(parent)
+
+        for t in needed_forward_tensors:
+            _ = t.values
         self.execute_ops(backward_graph_start, backward_kernel_start)
 
         self.ops = self.ops[:backward_graph_start]  # reset graph to pre-backward
@@ -1175,9 +1336,11 @@ class TensorContext:
         for i, kernel in enumerate(self.kernels[lim_kernels:]):
             k_obj = self.kernels_objs[lim_kernels + i]
             if k_obj is None:
+                # ShapeOP and ExpandOP need immediate execution (they're cheap view ops)
                 for op in kernel:
                     if type(op).__name__ == "ShapeOP":
-                        op.values = op.tensor1.values
+                        # ShapeOP is a view; it forwards values/flat to its parent.
+                        pass
                     elif type(op).__name__ == "ExpandOP":
                         parent = op.tensor1
                         if parent.values is None and parent.flat is None:
@@ -1188,9 +1351,13 @@ class TensorContext:
                         tgt_shape = list(op.shape)
                         data = parent.flat if parent.flat is not None else parent.values
                         if hasattr(tensorops_backend, "tensor_expand"):
-                            op.values = tensorops_backend.tensor_expand(
+                            result = tensorops_backend.tensor_expand(  # type: ignore[attr-defined]
                                 list(data), src_shape, tgt_shape
                             )
+                            # Fast path: bypass setter
+                            op._flat = result
+                            op.memview = None
+                            op._values = result
                         else:
                             # Python fallback if backend helper isn't available
                             new_capacity = reduce(mul, tgt_shape, 1)
@@ -1214,12 +1381,19 @@ class TensorContext:
                                     src_coord = 0 if src_shape[dim] == 1 else coord
                                     src_flat_idx += src_coord * src_strides[dim]
                                 new_values[out_idx] = data[src_flat_idx]
-                            op.values = new_values
+                            # Fast path: bypass setter
+                            op._flat = new_values
+                            op.memview = None
+                            op._values = new_values
                 continue
 
             kernel_result = next(res_iter)
-            for op_res, op in zip(kernel_result.val, kernel):
-                op.values = op_res
+            for j, op in enumerate(kernel):
+                # LAZY: store the KernelResult without calling .val.
+                # Each op remembers which output index it needs.
+                op._pending_kernel_result = kernel_result
+                op._pending_kernel_op_index = j
+                op._pending_ctx = self
 
     def execute_ops(self, lim=0, lim_kernels=0):
         self.rewrite()

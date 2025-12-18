@@ -1,6 +1,6 @@
 # test code adapted from https://github.com/karpathy/micrograd/blob/master/test/test_engine.py
 import torch
-from tensorops.tensor import Tensor, TensorContext, visualise_graph
+from tensorops.tensor import Tensor, TensorContext
 
 
 def test_sanity_check():
@@ -34,7 +34,6 @@ def test_sanity_check():
     print("torch q (val, grad)", q, q.grad.item())
     print("torch h (val, grad)", h, h.grad.item())
     print("torch y (val, grad)", y, y.grad.item())
-    visualise_graph(context.ops, display=False)
     x_pytorch, y_pytorch = x, y
     # forward pass went well
     assert y_tensorops.values[0] == y_pytorch.data.item()
