@@ -207,19 +207,10 @@ __kernel void VecLeakyReLU(__global const float* A,
 }
 
 /*
- * VecSumNew: Reduction sum along an axis
+ * VecSumNew: Reduction sum along an axis.
  *
- * Flattens indexing as if the input shape is:
- *   [pre_axis, axis_len, post_axis]
- * and produces an output of shape:
- *   [pre_axis, post_axis]
- *
- * Args:
- * input: __global const float* - Input buffer (len = pre_axis * axis_len * post_axis)
- * output: __global float*      - Output buffer (len = pre_axis * post_axis)
- * pre_axis_f: float            - Product of dimensions before the reduction axis
- * axis_len_f: float            - Length of the reduction axis
- * post_axis_f: float           - Product of dimensions after the reduction axis
+ * Treats input as shape [pre_axis, axis_len, post_axis]
+ * and outputs shape [pre_axis, post_axis].
  */
 __kernel void VecSumNew(__global const float* input,
                         __global float* output,
@@ -245,22 +236,68 @@ __kernel void VecSumNew(__global const float* input,
 
     output[id] = sum;
 }
+
+/*
+ * VecMaxNew: Reduction max along an axis.
+ *
+ * Treats input as shape [pre_axis, axis_len, post_axis]
+ * and outputs shape [pre_axis, post_axis].
+ */
+__kernel void VecMaxNew(__global const float* input,
+                        __global float* output,
+                        float pre_axis_f,
+                        float axis_len_f,
+                        float post_axis_f)
+{
+    int pre_axis = (int)pre_axis_f;
     int axis_len = (int)axis_len_f;
     int post_axis = (int)post_axis_f;
-    
+
     int id = get_global_id(0);
-    
     if (id >= pre_axis * post_axis) return;
-    
+
     int pre_idx = id / post_axis;
-    int post_idx = id % post_axis;
-    
-    float sum = 0.0f;
-    for (int i = 0; i < axis_len; i++) {
-        int input_idx = pre_idx * axis_len * post_axis + i * post_axis + post_idx;
-        sum += input[input_idx];
+    int post_idx = id - pre_idx * post_axis;
+
+    int input_idx0 = (pre_idx * axis_len + 0) * post_axis + post_idx;
+    float best = input[input_idx0];
+    for (int k = 1; k < axis_len; k++) {
+        int input_idx = (pre_idx * axis_len + k) * post_axis + post_idx;
+        float v = input[input_idx];
+        best = (v > best) ? v : best;
     }
-    
-    output[id] = sum;
+    output[id] = best;
+}
+
+/*
+ * VecMinNew: Reduction min along an axis.
+ *
+ * Treats input as shape [pre_axis, axis_len, post_axis]
+ * and outputs shape [pre_axis, post_axis].
+ */
+__kernel void VecMinNew(__global const float* input,
+                        __global float* output,
+                        float pre_axis_f,
+                        float axis_len_f,
+                        float post_axis_f)
+{
+    int pre_axis = (int)pre_axis_f;
+    int axis_len = (int)axis_len_f;
+    int post_axis = (int)post_axis_f;
+
+    int id = get_global_id(0);
+    if (id >= pre_axis * post_axis) return;
+
+    int pre_idx = id / post_axis;
+    int post_idx = id - pre_idx * post_axis;
+
+    int input_idx0 = (pre_idx * axis_len + 0) * post_axis + post_idx;
+    float best = input[input_idx0];
+    for (int k = 1; k < axis_len; k++) {
+        int input_idx = (pre_idx * axis_len + k) * post_axis + post_idx;
+        float v = input[input_idx];
+        best = (v < best) ? v : best;
+    }
+    output[id] = best;
 }
 

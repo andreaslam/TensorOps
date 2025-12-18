@@ -1,5 +1,6 @@
 use crate::kernel::{
     DirectInput, KernelResult, KernelTensorOps, KernelType, LogicalInputSource, PredefinedKernel,
+    ResolvedInput,
 };
 use ocl::Buffer;
 use ocl::{
@@ -76,7 +77,10 @@ impl Runtime {
         }
 
         let mut finished_kernel_ids = HashSet::new();
-        let mut results_map: HashMap<usize, KernelResult> = HashMap::new();
+        // Device-resident outputs per kernel_id. This avoids host readback + re-upload between kernels.
+        let mut device_results_map: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
+        // Work sizes for reading back results at the end.
+        let mut work_sizes_map: HashMap<usize, usize> = HashMap::new();
 
         let mut runnable_kernel_ids: Vec<usize> = current_kernels
             .iter()
@@ -116,8 +120,10 @@ impl Runtime {
             let queue = self.queue.clone();
 
             let mut batch_kernel_sources = HashSet::new();
-            let mut batch_resolved_kernel_data: HashMap<usize, (KernelTensorOps, Vec<Vec<f32>>)> =
-                HashMap::new();
+            let mut batch_resolved_kernel_data: HashMap<
+                usize,
+                (KernelTensorOps, Vec<ResolvedInput>),
+            > = HashMap::new();
             let mut batch_ocl_output_buffers: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
             let mut batch_ocl_kernel_args: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
             let mut batch_work_sizes: HashMap<usize, usize> = HashMap::new();
@@ -129,29 +135,28 @@ impl Runtime {
                     .find(|k| k.kernel_id == *kernel_id_to_run)
                     .expect("Missing kernel info");
 
-                let mut resolved_inputs: Vec<Vec<f32>> = Vec::new();
+                let mut resolved_inputs: Vec<ResolvedInput> = Vec::new();
 
                 if let Some(inputs) = &kernel_info.inputs {
                     for inp in inputs {
                         if let Ok(direct) = inp.bind(py).extract::<DirectInput>() {
-                            resolved_inputs.push(direct.data);
+                            resolved_inputs.push(ResolvedInput::Host(direct.data));
                         } else if let Ok(l_src) = inp.bind(py).extract::<LogicalInputSource>() {
-                            let src_result =
-                                results_map.get(&l_src.source_kernel_id).ok_or_else(|| {
+                            let src_bufs = device_results_map
+                                .get(&l_src.source_kernel_id)
+                                .ok_or_else(|| {
                                     PyRuntimeError::new_err(format!(
-                                        "Missing dependency result: {} -> {}",
+                                        "Missing dependency device result: {} -> {}",
                                         kernel_info.kernel_id, l_src.source_kernel_id
                                     ))
                                 })?;
-
-                            let input = src_result
-                                .val
+                            let buf = src_bufs
                                 .get(l_src.source_output_index)
                                 .cloned()
                                 .ok_or_else(|| {
                                     PyRuntimeError::new_err("Output index out of bounds")
                                 })?;
-                            resolved_inputs.push(input);
+                            resolved_inputs.push(ResolvedInput::Device(buf));
                         } else {
                             return Err(PyRuntimeError::new_err(format!(
                                 "Kernel {}: Invalid input type in inputs list",
@@ -168,7 +173,7 @@ impl Runtime {
             for (kernel_id, (kernel_info, resolved_inputs)) in &batch_resolved_kernel_data {
                 batch_kernel_sources.insert(kernel_info.kernel_src.as_str());
                 let (input_bufs, output_bufs, work_size, scalar_inputs) = kernel_info
-                    .prepare_ocl_buffers_from_resolved_inputs(&queue, resolved_inputs)?;
+                    .prepare_ocl_buffers_from_resolved_inputs_any(&queue, resolved_inputs)?;
 
                 let mut all_args = input_bufs.clone();
                 all_args.extend(output_bufs.clone());
@@ -207,26 +212,19 @@ impl Runtime {
                     .unwrap_or_else(Vec::new);
 
                 if work_size == 0 {
-                    let empty_outputs = vec![Vec::new(); kernel_info.num_output_bufs];
-                    results_map.insert(
-                        *kernel_id,
-                        KernelResult {
-                            val: empty_outputs,
-                            kernel_id: *kernel_id,
-                        },
-                    );
+                    device_results_map.insert(*kernel_id, Vec::new());
+                    work_sizes_map.insert(*kernel_id, 0);
                     finished_kernel_ids.insert(*kernel_id);
                     continue;
                 }
 
                 let name = match &kernel_info.kernel_type {
-                    KernelType::Predefined(pk) => {
-                        if *pk == PredefinedKernel::VecSum {
-                            "VecSumNew".to_string()
-                        } else {
-                            pk.to_string()
-                        }
-                    }
+                    KernelType::Predefined(pk) => match pk {
+                        PredefinedKernel::VecSum => "VecSumNew".to_string(),
+                        PredefinedKernel::VecMax => "VecMaxNew".to_string(),
+                        PredefinedKernel::VecMin => "VecMinNew".to_string(),
+                        _ => pk.to_string(),
+                    },
                     KernelType::Custom(cn) => cn.clone(),
                 };
 
@@ -251,35 +249,24 @@ impl Runtime {
                 unsafe { k.enq().map_err(|e| ocl_py_err(e, "Kernel Enqueue"))? };
             }
 
+            // Ensure all enqueued work is complete before scheduling dependent kernels.
+            queue.finish().map_err(|e| ocl_py_err(e, "Queue Finish"))?;
+
+            // Persist device output buffers for dependency resolution in subsequent batches.
             for kernel_id_done in &current_batch_ids_to_run {
-                if *batch_work_sizes.get(kernel_id_done).unwrap_or(&0) == 0 {
+                let work = *batch_work_sizes.get(kernel_id_done).unwrap_or(&0);
+                work_sizes_map.insert(*kernel_id_done, work);
+
+                if work == 0 {
                     continue;
                 }
 
-                let (kernel_info, _) = batch_resolved_kernel_data.get(kernel_id_done).unwrap();
-                let output_bufs = batch_ocl_output_buffers.get(kernel_id_done).unwrap();
-
-                let mut outputs = Vec::with_capacity(kernel_info.num_output_bufs);
-                for buf in output_bufs {
-                    let mut host = vec![0.0f32; *batch_work_sizes.get(kernel_id_done).unwrap()];
-                    buf.read(&mut host).enq().map_err(|e| {
-                        ocl_py_err(e, &format!("Read Buffer for Kernel {}", kernel_id_done))
-                    })?;
-                    outputs.push(host);
-                }
-
-                results_map.insert(
-                    *kernel_id_done,
-                    KernelResult {
-                        val: outputs,
-                        kernel_id: *kernel_id_done,
-                    },
-                );
+                let output_bufs = batch_ocl_output_buffers
+                    .remove(kernel_id_done)
+                    .unwrap_or_default();
+                device_results_map.insert(*kernel_id_done, output_bufs);
                 finished_kernel_ids.insert(*kernel_id_done);
             }
-
-            // Ensure all enqueued work is complete before scheduling dependent kernels.
-            queue.finish().map_err(|e| ocl_py_err(e, "Queue Finish"))?;
 
             for next in &current_kernels {
                 if finished_kernel_ids.contains(&next.kernel_id)
@@ -309,14 +296,31 @@ impl Runtime {
         let mut final_results = Vec::with_capacity(kernels_to_exec_py.len());
         for k_ref in kernels_to_exec_py {
             let id = k_ref.kernel_id;
-            if let Some(res) = results_map.remove(&id) {
-                final_results.push(res);
-            } else {
-                return Err(PyRuntimeError::new_err(format!(
-                    "Missing result for kernel ID {}",
-                    id
-                )));
+            let work = *work_sizes_map.get(&id).unwrap_or(&0);
+            if work == 0 {
+                final_results.push(KernelResult {
+                    val: vec![Vec::new(); k_ref.num_output_bufs],
+                    kernel_id: id,
+                });
+                continue;
             }
+
+            let output_bufs = device_results_map.get(&id).ok_or_else(|| {
+                PyRuntimeError::new_err(format!("Missing device result for kernel ID {}", id))
+            })?;
+
+            let mut outputs = Vec::with_capacity(k_ref.num_output_bufs);
+            for buf in output_bufs.iter() {
+                let mut host = vec![0.0f32; work];
+                buf.read(&mut host)
+                    .enq()
+                    .map_err(|e| ocl_py_err(e, &format!("Read Buffer for Kernel {}", id)))?;
+                outputs.push(host);
+            }
+            final_results.push(KernelResult {
+                val: outputs,
+                kernel_id: id,
+            });
         }
         Ok(final_results)
     }

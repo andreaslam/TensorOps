@@ -48,6 +48,12 @@ class KernelOP(Enum):
     VecSum = tensorops_backend.KernelType.predefined(
         tensorops_backend.PredefinedKernel.VecSum
     )
+    VecMax = tensorops_backend.KernelType.predefined(
+        tensorops_backend.PredefinedKernel.VecMax
+    )
+    VecMin = tensorops_backend.KernelType.predefined(
+        tensorops_backend.PredefinedKernel.VecMin
+    )
 
 
 class PredefinedKernel(Enum):
@@ -64,6 +70,8 @@ class PredefinedKernel(Enum):
     VecTanh = tensorops_backend.PredefinedKernel.VecTanh
     VecLeakyReLU = tensorops_backend.PredefinedKernel.VecLeakyReLU
     VecSum = tensorops_backend.PredefinedKernel.VecSum
+    VecMax = tensorops_backend.PredefinedKernel.VecMax
+    VecMin = tensorops_backend.PredefinedKernel.VecMin
 
 
 def prepare_kernel_snippets():
@@ -128,6 +136,8 @@ op_map = {
     Pow: PredefinedKernel.VecPow,
     GenericLog: PredefinedKernel.VecLog,
     Sum: PredefinedKernel.VecSum,
+    Max: PredefinedKernel.VecMax,
+    Min: PredefinedKernel.VecMin,
 }
 
 

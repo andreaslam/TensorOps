@@ -5,6 +5,33 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
+#[derive(Debug, Clone)]
+pub enum ResolvedInput {
+    Host(Vec<f32>),
+    Device(Buffer<f32>),
+}
+
+impl ResolvedInput {
+    fn len(&self) -> usize {
+        match self {
+            ResolvedInput::Host(v) => v.len(),
+            ResolvedInput::Device(b) => b.len(),
+        }
+    }
+
+    fn scalar0(&self) -> Result<f32, PyErr> {
+        match self {
+            ResolvedInput::Host(v) => v
+                .first()
+                .copied()
+                .ok_or_else(|| PyValueError::new_err("Expected scalar input (len 1)")),
+            ResolvedInput::Device(_) => Err(PyValueError::new_err(
+                "Scalar inputs must be provided as host vectors (len 1)",
+            )),
+        }
+    }
+}
+
 #[pyclass(eq, module = "tensorops_backend")]
 #[derive(Debug, PartialEq, Clone)]
 pub struct KernelResult {
@@ -58,6 +85,8 @@ pub enum PredefinedKernel {
     VecTanh,
     VecLeakyReLU,
     VecSum,
+    VecMax,
+    VecMin,
 }
 impl fmt::Display for PredefinedKernel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -276,6 +305,188 @@ impl KernelTensorOps {
 }
 
 impl KernelTensorOps {
+    pub fn prepare_ocl_buffers_from_resolved_inputs_any(
+        &self,
+        queue: &Queue,
+        resolved_inputs: &[ResolvedInput],
+    ) -> Result<(Vec<Buffer<f32>>, Vec<Buffer<f32>>, usize, Vec<f32>), PyErr> {
+        let mut scalar_inputs = Vec::new();
+        let mut input_ocl_buffers: Vec<Buffer<f32>> = Vec::new();
+
+        let work_size_dims = if !resolved_inputs.is_empty() {
+            if resolved_inputs[0].len() == 0 {
+                return Err(PyValueError::new_err(format!(
+                    "Kernel {}: Input 0 cannot be empty if other inputs exist.",
+                    self.kernel_id
+                )));
+            }
+
+            // VecLog: second input is scalar base
+            if self.kernel_type == KernelType::Predefined(PredefinedKernel::VecLog)
+                && resolved_inputs.len() >= 2
+            {
+                if resolved_inputs[1].len() == 1 {
+                    scalar_inputs.push(resolved_inputs[1].scalar0()?);
+                    // First input must be a buffer
+                    input_ocl_buffers.push(match &resolved_inputs[0] {
+                        ResolvedInput::Host(v) => Buffer::<f32>::builder()
+                            .queue(queue.clone())
+                            .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                            .len(v.len())
+                            .copy_host_slice(v.as_slice())
+                            .build()
+                            .map_err(|e| {
+                                PyRuntimeError::new_err(format!(
+                                    "Kernel {}: Failed to create VecLog input buffer: {}",
+                                    self.kernel_id, e
+                                ))
+                            })?,
+                        ResolvedInput::Device(b) => b.clone(),
+                    });
+                } else {
+                    return Err(PyValueError::new_err(format!(
+                        "Kernel {}: VecLog expects scalar base (len 1), got len {}.",
+                        self.kernel_id,
+                        resolved_inputs[1].len()
+                    )));
+                }
+                input_ocl_buffers[0].len()
+            }
+            // VecLeakyReLU: second input is scalar alpha
+            else if self.kernel_type == KernelType::Predefined(PredefinedKernel::VecLeakyReLU)
+                && resolved_inputs.len() >= 2
+            {
+                if resolved_inputs[1].len() == 1 {
+                    scalar_inputs.push(resolved_inputs[1].scalar0()?);
+                    input_ocl_buffers.push(match &resolved_inputs[0] {
+                        ResolvedInput::Host(v) => Buffer::<f32>::builder()
+                            .queue(queue.clone())
+                            .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                            .len(v.len())
+                            .copy_host_slice(v.as_slice())
+                            .build()
+                            .map_err(|e| {
+                                PyRuntimeError::new_err(format!(
+                                    "Kernel {}: Failed to create VecLeakyReLU input buffer: {}",
+                                    self.kernel_id, e
+                                ))
+                            })?,
+                        ResolvedInput::Device(b) => b.clone(),
+                    });
+                } else {
+                    return Err(PyValueError::new_err(format!(
+                        "Kernel {}: VecLeakyReLU expects scalar alpha (len 1), got len {}.",
+                        self.kernel_id,
+                        resolved_inputs[1].len()
+                    )));
+                }
+                input_ocl_buffers[0].len()
+            }
+            // Reduce ops: [data, pre, axis_len, post]
+            else if matches!(
+                self.kernel_type,
+                KernelType::Predefined(PredefinedKernel::VecSum)
+                    | KernelType::Predefined(PredefinedKernel::VecMax)
+                    | KernelType::Predefined(PredefinedKernel::VecMin)
+            ) && resolved_inputs.len() >= 4
+            {
+                scalar_inputs.push(resolved_inputs[1].scalar0()?);
+                scalar_inputs.push(resolved_inputs[2].scalar0()?);
+                scalar_inputs.push(resolved_inputs[3].scalar0()?);
+
+                input_ocl_buffers.push(match &resolved_inputs[0] {
+                    ResolvedInput::Host(v) => Buffer::<f32>::builder()
+                        .queue(queue.clone())
+                        .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                        .len(v.len())
+                        .copy_host_slice(v.as_slice())
+                        .build()
+                        .map_err(|e| {
+                            PyRuntimeError::new_err(format!(
+                                "Kernel {}: Failed to create reduce input buffer: {}",
+                                self.kernel_id, e
+                            ))
+                        })?,
+                    ResolvedInput::Device(b) => b.clone(),
+                });
+
+                let pre = scalar_inputs[0] as usize;
+                let post = scalar_inputs[2] as usize;
+                pre * post
+            } else {
+                // Generic: treat every input as a buffer input.
+                for (i, inp) in resolved_inputs.iter().enumerate() {
+                    let len = inp.len();
+                    if len == 0 {
+                        return Err(PyValueError::new_err(format!(
+                            "Kernel {}: Input {} is empty.",
+                            self.kernel_id, i
+                        )));
+                    }
+                    let buf = match inp {
+                        ResolvedInput::Host(v) => Buffer::<f32>::builder()
+                            .queue(queue.clone())
+                            .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                            .len(v.len())
+                            .copy_host_slice(v.as_slice())
+                            .build()
+                            .map_err(|e| {
+                                PyRuntimeError::new_err(format!(
+                                    "Kernel {}: Failed to create input buffer {}: {}",
+                                    self.kernel_id, i, e
+                                ))
+                            })?,
+                        ResolvedInput::Device(b) => b.clone(),
+                    };
+                    input_ocl_buffers.push(buf);
+                }
+
+                // Work size is defined by first input buffer length.
+                input_ocl_buffers
+                    .first()
+                    .ok_or_else(|| PyValueError::new_err("No inputs"))?
+                    .len()
+            }
+        } else if self.num_output_bufs > 0 {
+            return Err(PyValueError::new_err(format!(
+                "Kernel {}: Cannot infer output size without inputs.",
+                self.kernel_id
+            )));
+        } else {
+            0
+        };
+
+        if work_size_dims == 0 && (!input_ocl_buffers.is_empty() || self.num_output_bufs > 0) {
+            return Err(PyValueError::new_err(format!(
+                "Kernel {}: Work size is 0, but inputs/outputs exist.",
+                self.kernel_id
+            )));
+        }
+
+        let mut output_ocl_buffers = Vec::with_capacity(self.num_output_bufs);
+        for i in 0..self.num_output_bufs {
+            let ocl_buffer = Buffer::<f32>::builder()
+                .queue(queue.clone())
+                .flags(OclFlags::MEM_WRITE_ONLY)
+                .len(work_size_dims)
+                .build()
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "Kernel {}: Failed to create output buffer {}: {}",
+                        self.kernel_id, i, e
+                    ))
+                })?;
+            output_ocl_buffers.push(ocl_buffer);
+        }
+
+        Ok((
+            input_ocl_buffers,
+            output_ocl_buffers,
+            work_size_dims,
+            scalar_inputs,
+        ))
+    }
+
     pub fn prepare_ocl_buffers_from_resolved_inputs(
         &self,
         queue: &Queue,
@@ -319,10 +530,18 @@ impl KernelTensorOps {
                     )));
                 }
                 buffer_inputs[0].len()
-            } else if self.kernel_type == KernelType::Predefined(PredefinedKernel::VecSum)
-                && resolved_input_data.len() >= 4
+            } else if matches!(
+                self.kernel_type,
+                KernelType::Predefined(PredefinedKernel::VecSum)
+                    | KernelType::Predefined(PredefinedKernel::VecMax)
+                    | KernelType::Predefined(PredefinedKernel::VecMin)
+            ) && resolved_input_data.len() >= 4
             {
-                // Input 0: data, Input 1: pre_axis, Input 2: axis_len, Input 3: post_axis
+                // Reduce ops expect:
+                //   Input 0: data buffer (len = pre*axis*post)
+                //   Input 1: pre_axis (scalar)
+                //   Input 2: axis_len (scalar)
+                //   Input 3: post_axis (scalar)
                 scalar_inputs.push(resolved_input_data[1][0]);
                 scalar_inputs.push(resolved_input_data[2][0]);
                 scalar_inputs.push(resolved_input_data[3][0]);
@@ -352,12 +571,16 @@ impl KernelTensorOps {
 
         let mut input_ocl_buffers = Vec::with_capacity(buffer_inputs.len());
         for (i, vec_data) in buffer_inputs.iter().enumerate() {
-            // For VecSum, the input buffer (index 0) is larger than the work size (output size).
+            // For reduce ops, the input buffer (index 0) is larger than the work size (output size).
             // So we skip the length check for it.
-            let is_vec_sum_input =
-                self.kernel_type == KernelType::Predefined(PredefinedKernel::VecSum) && i == 0;
+            let is_reduce_input = matches!(
+                self.kernel_type,
+                KernelType::Predefined(PredefinedKernel::VecSum)
+                    | KernelType::Predefined(PredefinedKernel::VecMax)
+                    | KernelType::Predefined(PredefinedKernel::VecMin)
+            ) && i == 0;
 
-            if !is_vec_sum_input && vec_data.len() != work_size_dims {
+            if !is_reduce_input && vec_data.len() != work_size_dims {
                 return Err(PyValueError::new_err(format!(
                     "Kernel {}: Input vector {} length mismatch: expected {}, got {}.",
                     self.kernel_id,

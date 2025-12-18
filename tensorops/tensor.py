@@ -146,6 +146,16 @@ class Tensor(ABC):
             return Sum(self.reshape((-1,)), 0)
         return Sum(self, axis)
 
+    def max(self, axis=None):
+        if axis is None:
+            return Max(self.reshape((-1,)), 0)
+        return Max(self, axis)
+
+    def min(self, axis=None):
+        if axis is None:
+            return Min(self.reshape((-1,)), 0)
+        return Min(self, axis)
+
     def expand(self, shape):
         # Naive implementation using list repetition
         current_shape = self.shape
@@ -430,11 +440,11 @@ class Tensor(ABC):
     def __iter__(self):
         return iter(self.values if self.values else [])
 
-    def max(self):
+    def max_value(self):
         return max(self.flat if self.flat else self.values)
 
-    def min(self):
-        return max(self.flat if self.flat else self.values)
+    def min_value(self):
+        return min(self.flat if self.flat else self.values)
 
 
 class Repeat(Tensor):
@@ -576,6 +586,111 @@ class Sum(OP):
             # Expand to input shape
             expanded_grads = reshaped_grads.expand(self.tensor1.shape)
             self.tensor1.grads += expanded_grads
+
+
+class _ReduceBase(OP):
+    def __init__(self, tensor1, axis) -> None:
+        self.tensor1 = tensor1
+        self.axis = axis
+
+        shape = tensor1.shape
+        if axis < 0:
+            axis += len(shape)
+        assert 0 <= axis < len(shape), f"Axis {axis} out of bounds for shape {shape}"
+
+        self.axis_len = shape[axis]
+        self.pre_axis = reduce(mul, shape[:axis], 1)
+        self.post_axis = reduce(mul, shape[axis + 1 :], 1)
+
+        new_shape = list(shape)
+        new_shape.pop(axis)
+
+        super().__init__([tensor1], True if tensor1.requires_grad else False, False)
+        self.parents = [tensor1]
+
+        self.shape = tuple(new_shape)
+        self.capacity = reduce(mul, self.shape, 1)
+        self.grads = Tensor([0.0] * self.capacity, requires_grad=False)
+
+        # Scalar operands for the backend reduce kernels
+        self.scalar_operands = [
+            Tensor([float(self.pre_axis)], requires_grad=False),
+            Tensor([float(self.axis_len)], requires_grad=False),
+            Tensor([float(self.post_axis)], requires_grad=False),
+        ]
+
+    def _expanded_output_grads_to_input(self):
+        grad_shape = list(self.shape)
+        grad_shape.insert(self.axis, 1)
+        reshaped_grads = self.grads.reshape(tuple(grad_shape))
+        return reshaped_grads.expand(self.tensor1.shape)
+
+
+class Max(_ReduceBase):
+    def __init__(self, tensor1, axis) -> None:
+        super().__init__(tensor1, axis)
+
+    def get_grad(self) -> None:
+        if not (self.requires_grad and self.tensor1.requires_grad):
+            return
+
+        if self.tensor1.flat is None or self.values is None:
+            raise ValueError("Max backward requires forward values")
+
+        expanded_grads = self._expanded_output_grads_to_input()
+
+        # Build a mask where input equals the reduced max value.
+        mask_flat = [0.0] * self.tensor1.capacity
+        x = self.tensor1.flat
+        # Output is laid out as [pre_axis, post_axis]
+        for pre in range(self.pre_axis):
+            for post in range(self.post_axis):
+                base = (pre * self.axis_len) * self.post_axis + post
+                best = x[base]
+                for k in range(1, self.axis_len):
+                    v = x[base + k * self.post_axis]
+                    if v > best:
+                        best = v
+                for k in range(self.axis_len):
+                    idx = base + k * self.post_axis
+                    if x[idx] == best:
+                        mask_flat[idx] = 1.0
+
+        mask = Tensor(mask_flat, requires_grad=False).reshape(self.tensor1.shape)
+        self.tensor1.grads += expanded_grads * mask
+
+
+class Min(_ReduceBase):
+    def __init__(self, tensor1, axis) -> None:
+        super().__init__(tensor1, axis)
+
+    def get_grad(self) -> None:
+        if not (self.requires_grad and self.tensor1.requires_grad):
+            return
+
+        if self.tensor1.flat is None or self.values is None:
+            raise ValueError("Min backward requires forward values")
+
+        expanded_grads = self._expanded_output_grads_to_input()
+
+        # Build a mask where input equals the reduced min value.
+        mask_flat = [0.0] * self.tensor1.capacity
+        x = self.tensor1.flat
+        for pre in range(self.pre_axis):
+            for post in range(self.post_axis):
+                base = (pre * self.axis_len) * self.post_axis + post
+                best = x[base]
+                for k in range(1, self.axis_len):
+                    v = x[base + k * self.post_axis]
+                    if v < best:
+                        best = v
+                for k in range(self.axis_len):
+                    idx = base + k * self.post_axis
+                    if x[idx] == best:
+                        mask_flat[idx] = 1.0
+
+        mask = Tensor(mask_flat, requires_grad=False).reshape(self.tensor1.shape)
+        self.tensor1.grads += expanded_grads * mask
 
 
 class BinaryOP(OP):
