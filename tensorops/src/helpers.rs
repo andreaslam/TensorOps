@@ -97,3 +97,8 @@ pub fn get_predefined_kernel_source(kernel: &PredefinedKernel) -> Option<&'stati
     let result = PREDEFINED_KERNEL_SOURCES.get(kernel);
     result
 }
+
+#[pyfunction]
+pub fn get_kernel_source_by_name(kernel_name: String) -> Option<String> {
+    extract_kernel_code(&KERNEL_SRC, &kernel_name)
+}

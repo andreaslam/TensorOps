@@ -301,3 +301,36 @@ __kernel void VecMinNew(__global const float* input,
     output[id] = best;
 }
 
+/*
+ * VecExpandTemplate: Broadcast/expand a tensor to a target shape.
+ *
+ * This kernel is used as a TEMPLATE by the Python frontend, which rewrites:
+ *  - the kernel function name (to keep it unique per graph kernel), and
+ *  - the RANK define (so the unrolled loop bound is a compile-time constant).
+ *
+ * Signature is intentionally simple: src + shape/stride metadata + out.
+ * Metadata buffers are float arrays but are cast to int inside the kernel.
+ */
+#define RANK 1
+__kernel void VecExpandTemplate(
+    __global const float* src,
+    __global const float* src_shape,
+    __global const float* src_strides,
+    __global const float* tgt_shape,
+    __global const float* tgt_strides,
+    __global float* out
+) {
+    int gid = (int)get_global_id(0);
+    int src_idx = 0;
+    for (int d = 0; d < RANK; d++) {
+        int tstride = (int)tgt_strides[d];
+        int tshape = (int)tgt_shape[d];
+        int coord = (gid / tstride) % tshape;
+        int sshape = (int)src_shape[d];
+        int scol = (sshape == 1) ? 0 : coord;
+        int sstride = (int)src_strides[d];
+        src_idx += scol * sstride;
+    }
+    out[gid] = src[src_idx];
+}
+

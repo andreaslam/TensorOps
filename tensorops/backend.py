@@ -162,8 +162,121 @@ class Kernel:
     def convert_kernel(
         self, fusor_kernel_name_if_custom: Union[str, None]
     ) -> tensorops_backend.KernelTensorOps:
-        if type(self.op[0]).__name__ == "ShapeOP":
+        if type(self.op[0]).__name__ in ("ShapeOP",):
             return None
+
+        if type(self.op[0]).__name__ == "ExpandOP":
+            expand_op = self.op[0]
+            parent = expand_op.tensor1
+
+            src_shape = list(getattr(expand_op, "src_shape", None) or parent.shape)
+            tgt_shape = list(expand_op.shape)
+            if src_shape is None or tgt_shape is None:
+                raise ValueError("ExpandOP requires known shapes")
+            if len(src_shape) != len(tgt_shape):
+                raise ValueError(
+                    f"ExpandOP rank mismatch: src={src_shape} tgt={tgt_shape}"
+                )
+
+            def _strides(shape):
+                strides = [1] * len(shape)
+                stride = 1
+                for i in range(len(shape) - 1, -1, -1):
+                    strides[i] = stride
+                    stride *= int(shape[i])
+                return strides
+
+            src_strides = _strides(src_shape)
+            tgt_strides = _strides(tgt_shape)
+            tgt_size = reduce(mul, tgt_shape, 1)
+
+            kernel_name = f"VecExpand_{self.kernel_id}"
+            rank = len(tgt_shape)
+            if not hasattr(tensorops_backend, "get_kernel_source_by_name"):
+                raise RuntimeError(
+                    "tensorops_backend.get_kernel_source_by_name is required for ExpandOP; rebuild/upgrade the Rust backend"
+                )
+
+            template = tensorops_backend.get_kernel_source_by_name("VecExpandTemplate")
+            if not template:
+                raise RuntimeError(
+                    "VecExpandTemplate not found in backend kernel.cl; rebuild/upgrade the Rust backend"
+                )
+
+            custom_src_for_rust = re.sub(
+                r"#define\s+RANK\s+\d+",
+                f"#define RANK {rank}",
+                template,
+                count=1,
+            )
+            custom_src_for_rust = re.sub(
+                r"__kernel\s+void\s+VecExpandTemplate",
+                f"__kernel void {kernel_name}",
+                custom_src_for_rust,
+                count=1,
+            )
+
+            kernel_type_obj = tensorops_backend.KernelType.custom(kernel_name)
+
+            py_inputs = []
+
+            # Parent tensor: device dependency (LogicalInputSource) or host (DirectInput)
+            # Prefer LogicalInputSource when the parent is produced by a kernel in this graph.
+            actual_parent = parent
+            while type(actual_parent).__name__ == "ShapeOP":
+                actual_parent = getattr(actual_parent, "tensor1", actual_parent)
+
+            source_kernel_id = TensorContext.current_context.kernel_lookup.get(
+                actual_parent
+            )
+            exec_lim_kernels = getattr(
+                TensorContext.current_context, "_exec_lim_kernels", 0
+            )
+            if source_kernel_id is not None and source_kernel_id >= exec_lim_kernels:
+                source_kernel_op_list = TensorContext.current_context.kernels[
+                    source_kernel_id
+                ]
+                try:
+                    source_output_idx = source_kernel_op_list.index(actual_parent)
+                except ValueError:
+                    raise Exception(
+                        f"ExpandOP parent {actual_parent} not found in producing kernel op list (kernel {source_kernel_id})."
+                    )
+                py_inputs.append(
+                    tensorops_backend.LogicalInputSource(
+                        source_kernel_id, source_output_idx
+                    )
+                )
+            elif parent.values is not None:
+                py_inputs.append(tensorops_backend.DirectInput(parent.flat))
+            else:
+                raise Exception(
+                    f"ExpandOP parent {actual_parent} not found in kernel_lookup (kernel {self.kernel_id}) and has no host values."
+                )
+
+            # Small metadata buffers (floats; cast to int in kernel)
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in src_shape])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in src_strides])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in tgt_shape])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in tgt_strides])
+            )
+
+            return tensorops_backend.KernelTensorOps(
+                kernel_type=kernel_type_obj,
+                kernel_id=self.kernel_id,
+                num_output_bufs=1,
+                custom_kernel_src=custom_src_for_rust,
+                inputs=py_inputs,
+                scalar_inputs=None,
+                work_size_override=int(tgt_size),
+            )
 
         is_predefined = len(self.op) == 1
         kernel_type_obj = (
@@ -211,17 +324,21 @@ class Kernel:
             )
 
         for input_tensor in input_tensors_for_kernel_object:
-            if input_tensor.values is not None:
-                py_inputs.append(tensorops_backend.DirectInput(input_tensor.flat))
-            else:
-                actual_op_for_lookup = input_tensor
-                source_kernel_id = TensorContext.current_context.kernel_lookup.get(
-                    actual_op_for_lookup
+            # Prefer LogicalInputSource when possible, even if the tensor currently
+            # has `.values` populated (to avoid copying large buffers back into Rust).
+            actual_op_for_lookup = input_tensor
+            while type(actual_op_for_lookup).__name__ == "ShapeOP":
+                actual_op_for_lookup = getattr(
+                    actual_op_for_lookup, "tensor1", actual_op_for_lookup
                 )
-                if source_kernel_id is None:
-                    raise Exception(
-                        f"Logical input {actual_op_for_lookup} (kernel {self.kernel_id}) not found in kernel_lookup."
-                    )
+
+            source_kernel_id = TensorContext.current_context.kernel_lookup.get(
+                actual_op_for_lookup
+            )
+            exec_lim_kernels = getattr(
+                TensorContext.current_context, "_exec_lim_kernels", 0
+            )
+            if source_kernel_id is not None and source_kernel_id >= exec_lim_kernels:
                 source_kernel_op_list = TensorContext.current_context.kernels[
                     source_kernel_id
                 ]
@@ -237,10 +354,17 @@ class Kernel:
                         f"Parent OP {actual_op_for_lookup} (logical input to kernel {self.kernel_id}) "
                         f"not found in its own producing kernel's op list (kernel {source_kernel_id})."
                     )
-                lis = tensorops_backend.LogicalInputSource(
-                    source_kernel_id, source_output_idx
+                py_inputs.append(
+                    tensorops_backend.LogicalInputSource(
+                        source_kernel_id, source_output_idx
+                    )
                 )
-                py_inputs.append(lis)
+            elif input_tensor.values is not None:
+                py_inputs.append(tensorops_backend.DirectInput(input_tensor.flat))
+            else:
+                raise Exception(
+                    f"Logical input {actual_op_for_lookup} (kernel {self.kernel_id}) not found in kernel_lookup and has no host values."
+                )
         return tensorops_backend.KernelTensorOps(
             kernel_type=kernel_type_obj,
             kernel_id=self.kernel_id,

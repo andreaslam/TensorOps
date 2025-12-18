@@ -79,33 +79,122 @@ class PlotterUtil:
             plt.show()
 
 
-def visualise_graph(nodes, save_img=True, img_path="graph.png", display=True):
+def visualise_graph(
+    initial_nodes, save_img=True, img_path="graph.png", display=True
+) -> None:
+    """
+    Visualizes an operator graph starting from a list of final (output) nodes.
+
+    Args:
+    -----
+    initial_nodes (Union[list[Tensor], Tensor]): A list of Tensor/OP objects that are the final nodes of the graph to visualize. The graph is built by traversing backwards.
+    save_img (bool): Whether to save the graph image to a file.
+    img_path (str): Path to save the image.
+    display (bool): Whether to display the graph using matplotlib.
+    """
     G = nx.DiGraph()
     labels = {}
-    for node in nodes:
-        node_id = id(node)
-        node_label = f"{type(node).__name__}\nVal: {round(node.value,2)}\nGrad: {round(node.grad,2)}"
-        labels[node_id] = node_label
-        G.add_node(node_id)
-        for parent in node.parents:
-            parent_id = id(parent)
-            G.add_edge(parent_id, node_id)
 
-    pos = nx.planar_layout(G)
-    colourmap = [
-        "#FFB6C1" if node.weight else "#00B4D9" if node.requires_grad else "#C1E1C1"
-        for (_, node) in zip(G, nodes)
-    ]
+    all_nodes_map = {}
+
+    if not initial_nodes:
+        queue = []
+    elif not isinstance(initial_nodes, list):
+        queue = [initial_nodes]
+    else:
+        queue = list(initial_nodes)
+
+    visited_ids = set()
+    while queue:
+        current_node = queue.pop(0)
+        current_id = id(current_node)
+
+        if current_id in visited_ids:
+            continue
+        visited_ids.add(current_id)
+        all_nodes_map[current_id] = current_node
+
+        if hasattr(current_node, "parents") and current_node.parents is not None:
+            for parent_node in current_node.parents:
+                if id(parent_node) not in all_nodes_map:
+                    all_nodes_map[id(parent_node)] = parent_node
+                if id(parent_node) not in visited_ids:
+                    queue.append(parent_node)
+
+    if not all_nodes_map:
+        if display or save_img:
+            plt.figure(figsize=(6, 4))
+            plt.text(0.5, 0.5, "Empty graph", ha="center", va="center", fontsize=12)
+            if save_img:
+                plt.savefig(img_path, bbox_inches="tight")
+            if display:
+                plt.show()
+            plt.close()
+        return
+
+    for node_id, node_obj in all_nodes_map.items():
+        G.add_node(node_id)
+        label_text = type(node_obj).__name__
+        if hasattr(node_obj, "shape") and node_obj.shape is not None:
+            label_text += f"\nshape={node_obj.shape}"
+        labels[node_id] = label_text
+
+    for node_id, node_obj in all_nodes_map.items():
+        if hasattr(node_obj, "parents") and node_obj.parents is not None:
+            for parent_node in node_obj.parents:
+                parent_id = id(parent_node)
+                if parent_id in all_nodes_map:
+                    G.add_edge(parent_id, node_id)
+
+    if not G.nodes:
+        if display or save_img:
+            plt.figure(figsize=(6, 4))
+            plt.text(0.5, 0.5, "Empty graph", ha="center", va="center", fontsize=12)
+            if save_img:
+                plt.savefig(img_path, bbox_inches="tight")
+            if display:
+                plt.show()
+            plt.close()
+        return
+
+    try:
+        pos = nx.planar_layout(G)
+    except nx.NetworkXException:
+        try:
+            pos = nx.kamada_kawai_layout(G)
+        except nx.NetworkXException:
+            pos = nx.spring_layout(G, seed=42)
+
+    node_colors = []
+    for node_id_in_graph in G.nodes():
+        node_obj = all_nodes_map[node_id_in_graph]
+
+        color = "#C1E1C1"
+        if hasattr(node_obj, "weight") and node_obj.weight:
+            color = "#FFB6C1"
+        elif hasattr(node_obj, "requires_grad") and node_obj.requires_grad:
+            color = "#00B4D9"
+        node_colors.append(color)
+
+    fig_width = max(10, G.number_of_nodes() * 0.8 if G.number_of_nodes() > 0 else 10)
+    fig_height = max(8, G.number_of_nodes() * 0.6 if G.number_of_nodes() > 0 else 8)
+    plt.figure(figsize=(fig_width, fig_height))
+
     nx.draw(
         G,
         pos,
         labels=labels,
         with_labels=True,
-        node_size=800,
-        node_color=colourmap,
-        font_size=6,
+        node_size=2500,
+        node_color=node_colors,
+        font_size=9,
+        font_weight="normal",
+        arrowsize=15,
+        width=1.5,
     )
+
     if save_img:
-        plt.savefig(img_path)
+        plt.savefig(img_path, bbox_inches="tight", dpi=150)
     if display:
         plt.show()
+    plt.close()

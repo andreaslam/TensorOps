@@ -43,7 +43,9 @@ class Model(ABC):
             self.loss_criterion = loss_criterion
 
     @abstractmethod
-    def forward(self, model_inputs: Union[list[Tensor], Tensor]) -> Union[list[Tensor], Tensor]:
+    def forward(
+        self, model_inputs: Union[list[Tensor], Tensor]
+    ) -> Union[list[Tensor], Tensor]:
         """
         Executes a forward pass of the neural network given input.
 
@@ -252,7 +254,9 @@ class Layer:
                 len(output_bias) == self.num_output_tensors
             ), "Length of output_bias must match num_output_tensors."
         else:
-            output_bias = [random.uniform(-1, 1) for _ in range(self.num_output_tensors)]
+            output_bias = [
+                random.uniform(-1, 1) for _ in range(self.num_output_tensors)
+            ]
         self.layer_output = [
             Activation(
                 self.context,
@@ -287,7 +291,9 @@ class Layer:
         for tensor, forward_input in zip(self.layer_input_tensors, forward_inputs):
             Tensor.set_value(forward_input.value)
 
-        return [activation(self.layer_input_tensors) for activation in self.layer_output]
+        return [
+            activation(self.layer_input_tensors) for activation in self.layer_output
+        ]
 
     def __repr__(self) -> str:
         return f"""
@@ -355,7 +361,8 @@ class Activation:
             if weights:
                 assert len(weights) == self.num_input_tensors
                 self.weights = [
-                    Tensor(weight, requires_grad=True, weight=True) for weight in weights
+                    Tensor(weight, requires_grad=True, weight=True)
+                    for weight in weights
                 ]
             else:
                 self.weights = [
@@ -366,10 +373,14 @@ class Activation:
             if bias:
                 self.bias = Tensor(bias, requires_grad=True, weight=True)
             else:
-                self.bias = Tensor(random.uniform(-1, 1), requires_grad=True, weight=True)
+                self.bias = Tensor(
+                    random.uniform(-1, 1), requires_grad=True, weight=True
+                )
 
             output_tensor = Tensor(0.0, requires_grad=True, weight=False)
-            for weight, input_tensor in zip(self.weights, self.activation_input_tensors):
+            for weight, input_tensor in zip(
+                self.weights, self.activation_input_tensors
+            ):
                 output_tensor += weight * input_tensor
 
             if self.activation_function:

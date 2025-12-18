@@ -7,14 +7,12 @@ from functools import reduce
 from itertools import chain
 from operator import mul, xor
 
-import matplotlib.pyplot as plt
-import networkx as nx
 import tensorops_backend
 
 from tensorops import rt
 
 # TODO
-# impl nn essentials, eg softmax, softplus, sigmoid, max, min, argmax, sum, ones, zeros, repeats
+# impl nn essentials, eg softmax, softplus, sigmoid, argmax
 # docstrings
 
 
@@ -30,7 +28,8 @@ class Tensor(ABC):
     ) -> None:
         self.weight = weight
         self.grad_tensor = grad_tensor
-        assert xor(bool(values), is_op), (
+        has_value = values is not None
+        assert xor(has_value, is_op), (
             f"Must be either a valued Tensor or an OP, got {values}"
         )
         self.is_op = is_op
@@ -38,7 +37,7 @@ class Tensor(ABC):
         # user decides whether the tensor can be fused or not, for example, if the user wants to see the value of a tensor, since the value of the tensor might not be guaranteed to be present due to kernel fusion not returning intermediate results. this guarantees that the tensor value is returned
         self.available_during_exec = False
         self.memview = None
-        if values:
+        if values is not None:
             if isinstance(values, (float, int)):
                 self._values = [values]
             elif isinstance(values, list):
@@ -55,21 +54,16 @@ class Tensor(ABC):
 
         self.requires_grad = requires_grad
 
-        if self.values:
+        if self._values is not None:
             self.memview, self._shape = tensorops_backend.tensor_from_list(self._values)
             self.flat = list(self.memview)
         else:
             self.flat = None
         if self.weight:
             self.requires_grad = True
-        self.capacity = reduce(mul, self._shape) if self._shape else None
-        if not self.grad_tensor:
-            if self.capacity is not None:
-                self.grads = Tensor(
-                    [0.0] * self.capacity, requires_grad=False, grad_tensor=True
-                )
-            else:
-                self.grads = None
+        self.capacity = reduce(mul, self._shape, 1) if self._shape is not None else None
+        # Gradients are allocated lazily to reduce peak memory usage.
+        self.grads = None
 
     @property
     def values(self):
@@ -82,6 +76,21 @@ class Tensor(ABC):
             self.flat = None
             self.memview = None
             return
+
+        # Fast path: backend outputs are already flat lists. If we already know
+        # the semantic shape, avoid calling tensor_from_list() (which is expensive
+        # for large buffers) just to re-infer a 1D shape.
+        if self.shape is not None and isinstance(new_value, list):
+            expected = reduce(mul, self.shape, 1)
+            if expected != len(new_value):
+                raise ValueError(
+                    f"Value length {len(new_value)} does not match tensor shape {self.shape} (expected {expected})"
+                )
+            if not new_value or not isinstance(new_value[0], list):
+                self.flat = new_value
+                self.memview = None
+                self._values = new_value
+                return
 
         memview, inferred_shape = tensorops_backend.tensor_from_list(new_value)
 
@@ -110,21 +119,30 @@ class Tensor(ABC):
         if new_shape and self.shape:
             _ = _check_shape(self.shape, new_shape)
         self._shape = new_shape
-        self.capacity = self.capacity if self.capacity else reduce(mul, new_shape)
+        self.capacity = self.capacity if self.capacity else reduce(mul, new_shape, 1)
 
-        # If this tensor was created lazily (e.g. an OP before execution) it may
-        # not have had capacity available during __init__, so grads could be None.
-        # Once shape/capacity exists, ensure grads are allocated for tensors that
-        # participate in autograd.
-        if (
-            not getattr(self, "grad_tensor", False)
-            and getattr(self, "requires_grad", False)
-            and self.capacity is not None
-            and getattr(self, "grads", None) is None
-        ):
-            self.grads = Tensor(
-                [0.0] * self.capacity, requires_grad=False, grad_tensor=True
-            )
+    def _alloc_zero_grads(self) -> Tensor:
+        cap = self.capacity
+        if cap is None:
+            if self.shape is not None:
+                cap = reduce(mul, self.shape, 1)
+            elif self.values is not None:
+                cap = len(self.values)
+            else:
+                raise ValueError("Cannot allocate grads for tensor with unknown size")
+
+        g = Tensor([0.0] * int(cap), requires_grad=False, grad_tensor=True)
+        if self.shape is not None:
+            g.shape = self.shape
+        return g
+
+    def add_grad(self, grad: Tensor) -> None:
+        if grad is None:
+            return
+        if self.grads is None:
+            self.grads = grad
+        else:
+            self.grads = Add(self.grads, grad)
 
     def reshape(self, shape) -> ShapeOP:
         # support -1 reshaping (unknown)
@@ -146,19 +164,71 @@ class Tensor(ABC):
             return Sum(self.reshape((-1,)), 0)
         return Sum(self, axis)
 
-    def max(self, axis=None):
-        if axis is None:
-            return Max(self.reshape((-1,)), 0)
-        return Max(self, axis)
+    def max(self, axis: Optional[int] = None, keepdims: bool = False):
+        data = self.flat if self.flat else self.values
 
-    def min(self, axis=None):
+        if not data:
+            raise ValueError("Cannot compute max of empty tensor")
+
+        result_data, result_shape = tensorops_backend.tensor_max(
+            data, list(self.shape), axis
+        )
+
+        # If axis is None, return scalar
         if axis is None:
-            return Min(self.reshape((-1,)), 0)
-        return Min(self, axis)
+            return result_data[0]
+
+        # Handle keepdims
+        if keepdims:
+            # Insert dimension of size 1 at the reduced axis
+            axis_idx = axis if axis >= 0 else len(self.shape) + axis
+            result_shape = list(result_shape)
+            result_shape.insert(axis_idx, 1)
+            result_shape = tuple(result_shape)
+        else:
+            result_shape = tuple(result_shape)
+
+        # Return as Tensor
+        result = Tensor(result_data, requires_grad=False)
+        result.shape = result_shape
+        return result
+
+    def min(self, axis: Optional[int] = None, keepdims: bool = False):
+        data = self.flat if self.flat else self.values
+
+        if not data:
+            raise ValueError("Cannot compute min of empty tensor")
+
+        result_data, result_shape = tensorops_backend.tensor_min(
+            data, list(self.shape), axis
+        )
+
+        # If axis is None, return scalar
+        if axis is None:
+            return result_data[0]
+
+        # Handle keepdims
+        if keepdims:
+            # Insert dimension of size 1 at the reduced axis
+            axis_idx = axis if axis >= 0 else len(self.shape) + axis
+            result_shape = list(result_shape)
+            result_shape.insert(axis_idx, 1)
+            result_shape = tuple(result_shape)
+        else:
+            result_shape = tuple(result_shape)
+
+        # Return as Tensor
+        result = Tensor(result_data, requires_grad=False)
+        result.shape = result_shape
+        return result
 
     def expand(self, shape):
-        # Naive implementation using list repetition
+        # Broadcast/expand along singleton dimensions.
+        # Fast-path uses Rust backend when available.
         current_shape = self.shape
+        if current_shape is None:
+            raise ValueError("Cannot expand a tensor with unknown shape")
+        shape = tuple(shape)
         if len(shape) != len(current_shape):
             raise ValueError(
                 "Expand requires same number of dimensions (use reshape/unsqueeze first)"
@@ -171,14 +241,33 @@ class Tensor(ABC):
         if shape == current_shape:
             return self
 
+        # Lazy path: if we're building a graph (or don't have values yet), defer
+        # expansion until execution.
+        if TensorContext.current_context is not None or (
+            self.values is None and self.flat is None
+        ):
+            return ExpandOP(self, shape)
+
+        data = self.flat if self.flat is not None else self.values
+        if data is None:
+            raise ValueError("Cannot expand a tensor without values")
+
+        # Rust backend path
+        if hasattr(tensorops_backend, "tensor_expand"):
+            new_values = tensorops_backend.tensor_expand(
+                list(data), list(current_shape), list(shape)
+            )
+            return Tensor(new_values, requires_grad=self.requires_grad).reshape(shape)
+
+        # Fallback Python implementation
         new_capacity = reduce(mul, shape, 1)
         new_values = [0.0] * new_capacity
 
-        src_strides = [1] * len(self.shape)
+        src_strides = [1] * len(current_shape)
         stride = 1
-        for i in range(len(self.shape) - 1, -1, -1):
+        for i in range(len(current_shape) - 1, -1, -1):
             src_strides[i] = stride
-            stride *= self.shape[i]
+            stride *= current_shape[i]
 
         tgt_strides = [1] * len(shape)
         stride = 1
@@ -188,21 +277,15 @@ class Tensor(ABC):
 
         # Iterate over all elements in target
         # Note: This is slow for large tensors
-        if self.values:
-            for i in range(new_capacity):
-                idx = i
-                src_flat_idx = 0
-                for dim in range(len(shape)):
-                    coord = (idx // tgt_strides[dim]) % shape[dim]
-                    if self.shape[dim] == 1:
-                        src_coord = 0
-                    else:
-                        src_coord = coord
-                    src_flat_idx += src_coord * src_strides[dim]
+        for i in range(new_capacity):
+            src_flat_idx = 0
+            for dim in range(len(shape)):
+                coord = (i // tgt_strides[dim]) % shape[dim]
+                src_coord = 0 if current_shape[dim] == 1 else coord
+                src_flat_idx += src_coord * src_strides[dim]
+            new_values[i] = data[src_flat_idx]
 
-                new_values[i] = self.flat[src_flat_idx]
-
-        return Tensor(new_values).reshape(shape)
+        return Tensor(new_values, requires_grad=self.requires_grad).reshape(shape)
 
     def permute(self, dims):
         assert len(dims) == len(self.shape), "Permute dims must match tensor dims"
@@ -386,7 +469,7 @@ class Tensor(ABC):
         return Tanh(self)
 
     def relu(self) -> LeakyReLU:
-        return LeakyReLU(self, [0.0])
+        return LeakyReLU(self, 0.0)
 
     def leaky_relu(self, leaky_grad: float | Tensor | list = 0.01) -> LeakyReLU:
         return LeakyReLU(self, leaky_grad)
@@ -395,7 +478,11 @@ class Tensor(ABC):
         assert self.values, (
             f"Cannot seed gradient, the valued tensor must not be empty! {self}"
         )
-        self.grads = Tensor([seed] * len(self.values), requires_grad=False)
+        self.grads = Tensor(
+            [seed] * len(self.values), requires_grad=False, grad_tensor=True
+        )
+        if self.shape is not None:
+            self.grads.shape = self.shape
 
     def squeeze(self):
         assert self.shape[0] == 1, f"Cannot squeeze tensor shaped {self.shape}"
@@ -523,72 +610,46 @@ class ShapeOP(OP):
 
     def get_grad(self) -> None:
         if self.requires_grad and self.tensor1.requires_grad:
-            self.tensor1.grads = Add(self.tensor1.grads, self.grads)
-
-    @property
-    def values(self):
-        return self._values
-
-    @values.setter
-    def values(self, new_value):
-        if new_value is None:
-            self._values = None
-            self.flat = None
-            self.memview = None
-            return
-
-        memview, shape = tensorops_backend.tensor_from_list(new_value)
-        self.flat = list(memview)
-        self.memview = memview
-        self._values = new_value
+            self.tensor1.add_grad(self.grads)
 
 
-class Sum(OP):
-    def __init__(self, tensor1, axis) -> None:
-        self.tensor1 = tensor1
-        self.axis = axis
-
-        shape = tensor1.shape
-        if axis < 0:
-            axis += len(shape)
-
-        assert 0 <= axis < len(shape), f"Axis {axis} out of bounds for shape {shape}"
-
-        self.axis_len = shape[axis]
-        self.pre_axis = reduce(mul, shape[:axis], 1)
-        self.post_axis = reduce(mul, shape[axis + 1 :], 1)
-
-        new_shape = list(shape)
-        new_shape.pop(axis)
-
+class ExpandOP(OP):
+    def __init__(self, tensor1: Tensor, new_shape) -> None:
         super().__init__([tensor1], True if tensor1.requires_grad else False, False)
         self.parents = [tensor1]
-
+        self.tensor1 = tensor1
+        self.src_shape = tensor1.shape
         self.shape = tuple(new_shape)
-        self.capacity = reduce(mul, self.shape, 1)
-        self.grads = Tensor([0.0] * self.capacity, requires_grad=False)
-
-        # Scalar operands for the kernel
-        self.scalar_operands = [
-            Tensor([float(self.pre_axis)], requires_grad=False),
-            Tensor([float(self.axis_len)], requires_grad=False),
-            Tensor([float(self.post_axis)], requires_grad=False),
-        ]
+        # Expand is executed as a dedicated custom OpenCL kernel; keep it out of fusion.
+        self.fusable_op = False
 
     def get_grad(self) -> None:
-        # Gradient of sum is broadcasting the grad to the input shape
-        # We need to reshape grad to insert the axis back, then expand
-        if self.requires_grad and self.tensor1.requires_grad:
-            # Reshape grads to (..., 1, ...)
-            grad_shape = list(self.shape)
-            grad_shape.insert(self.axis, 1)
-            reshaped_grads = self.grads.reshape(tuple(grad_shape))
-            # Expand to input shape
-            expanded_grads = reshaped_grads.expand(self.tensor1.shape)
-            self.tensor1.grads += expanded_grads
+        if not (self.requires_grad and self.tensor1.requires_grad):
+            return
+
+        src_shape = self.tensor1.shape
+        tgt_shape = self.shape
+        if src_shape is None or tgt_shape is None:
+            raise ValueError("Expand backward requires known shapes")
+        if len(src_shape) != len(tgt_shape):
+            raise ValueError(
+                f"Expand backward rank mismatch: {src_shape} vs {tgt_shape}"
+            )
+
+        reduced = self.grads
+        # Reduce broadcasted axes (where src dim == 1 and tgt dim > 1)
+        for axis in range(len(tgt_shape) - 1, -1, -1):
+            if src_shape[axis] == 1 and tgt_shape[axis] > 1:
+                reduced = reduced.sum(axis=axis)
+                # Sum drops the axis; re-insert as size-1 to match src rank.
+                new_shape = list(reduced.shape)
+                new_shape.insert(axis, 1)
+                reduced = reduced.reshape(tuple(new_shape))
+
+        self.tensor1.add_grad(reduced)
 
 
-class _ReduceBase(OP):
+class ReduceOP(OP):
     def __init__(self, tensor1, axis) -> None:
         self.tensor1 = tensor1
         self.axis = axis
@@ -610,7 +671,7 @@ class _ReduceBase(OP):
 
         self.shape = tuple(new_shape)
         self.capacity = reduce(mul, self.shape, 1)
-        self.grads = Tensor([0.0] * self.capacity, requires_grad=False)
+        self.grads = None
 
         # Scalar operands for the backend reduce kernels
         self.scalar_operands = [
@@ -626,7 +687,18 @@ class _ReduceBase(OP):
         return reshaped_grads.expand(self.tensor1.shape)
 
 
-class Max(_ReduceBase):
+class Sum(ReduceOP):
+    def __init__(self, tensor1, axis) -> None:
+        super().__init__(tensor1, axis)
+
+    def get_grad(self) -> None:
+        # Gradient of sum is broadcasting the grad to the input shape
+        if self.requires_grad and self.tensor1.requires_grad:
+            expanded_grads = self._expanded_output_grads_to_input()
+            self.tensor1.add_grad(expanded_grads)
+
+
+class Max(ReduceOP):
     def __init__(self, tensor1, axis) -> None:
         super().__init__(tensor1, axis)
 
@@ -657,10 +729,10 @@ class Max(_ReduceBase):
                         mask_flat[idx] = 1.0
 
         mask = Tensor(mask_flat, requires_grad=False).reshape(self.tensor1.shape)
-        self.tensor1.grads += expanded_grads * mask
+        self.tensor1.add_grad(expanded_grads * mask)
 
 
-class Min(_ReduceBase):
+class Min(ReduceOP):
     def __init__(self, tensor1, axis) -> None:
         super().__init__(tensor1, axis)
 
@@ -690,7 +762,7 @@ class Min(_ReduceBase):
                         mask_flat[idx] = 1.0
 
         mask = Tensor(mask_flat, requires_grad=False).reshape(self.tensor1.shape)
-        self.tensor1.grads += expanded_grads * mask
+        self.tensor1.add_grad(expanded_grads * mask)
 
 
 class BinaryOP(OP):
@@ -737,7 +809,7 @@ class BinaryOP(OP):
                 broadcasted.capacity = reduce(mul, broadcasted._shape, 1)
             self.shape = shape_copy.shape
 
-        self.grads = Tensor([0.0] * reduce(mul, self.shape), requires_grad=False)
+        self.grads = None
 
 
 class Add(BinaryOP):
@@ -745,8 +817,8 @@ class Add(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.grads += self.grads
-        self.tensor2.grads += self.grads
+        self.tensor1.add_grad(self.grads)
+        self.tensor2.add_grad(self.grads)
 
 
 class Sub(BinaryOP):
@@ -754,8 +826,8 @@ class Sub(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.grads += self.grads
-        self.tensor2.grads += self.grads * -1
+        self.tensor1.add_grad(self.grads)
+        self.tensor2.add_grad(self.grads * -1)
 
 
 class ElementMul(BinaryOP):
@@ -763,8 +835,8 @@ class ElementMul(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.grads += self.grads * self.tensor2
-        self.tensor2.grads += self.grads * self.tensor1
+        self.tensor1.add_grad(self.grads * self.tensor2)
+        self.tensor2.add_grad(self.grads * self.tensor1)
 
 
 class Div(BinaryOP):
@@ -772,34 +844,8 @@ class Div(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.grads += self.grads * 1 / self.tensor2
-        self.tensor2.grads += self.grads * -self.tensor1 / (self.tensor2**2)
-
-
-class MatMul(BinaryOP):
-    def __init__(self, tensor1, tensor2) -> None:
-        super().__init__(tensor1, tensor2)
-
-        tensor1_mk = self.tensor1.shape
-        output_ndims = len(self.tensor1.shape)
-        tensor2_mk = self.tensor2.shape
-
-        assert (
-            tensor1_mk[1] == tensor2_mk[0]
-            and len(tensor1_mk) == 2
-            and len(tensor2_mk) == 2
-        ), f"Incorrect shape for MatMul, got {tensor1_mk} and {tensor2_mk}"
-        self.m = tensor1_mk[0]
-        self.n = tensor2_mk[1]
-        self.k = tensor1_mk[1]
-        self.tensor1.flat = self.tensor1.flatten()
-        self.tensor2.flat = self.tensor2.flatten()
-
-        self.shape = tuple(([1] * (output_ndims - 2)) + [self.m, self.n])
-        self.grads = Tensor([0.0] * self.capacity, requires_grad=False)
-
-    def get_grad(self):
-        raise NotImplementedError
+        self.tensor1.add_grad(self.grads * 1 / self.tensor2)
+        self.tensor2.add_grad(self.grads * -self.tensor1 / (self.tensor2**2))
 
 
 class Pow(BinaryOP):
@@ -807,11 +853,11 @@ class Pow(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self):
-        self.tensor1.grads += (
+        self.tensor1.add_grad(
             self.grads * self.tensor2 * (self.tensor1 ** (self.tensor2 - 1))
         )
-        self.tensor2.grads += self.grads * (
-            (self.tensor1**self.tensor2) * self.tensor1.log()
+        self.tensor2.add_grad(
+            self.grads * ((self.tensor1**self.tensor2) * self.tensor1.log())
         )
 
 
@@ -826,10 +872,11 @@ class GenericLog(BinaryOP):
         self.scalar_operands = [self.base_value]
 
     def get_grad(self):
-        self.tensor1.grads += self.grads * (
-            -(self.tensor2.log() / (self.tensor1 * ((self.tensor1.log()) ** 2)))
+        self.tensor1.add_grad(
+            self.grads
+            * (-(self.tensor2.log() / (self.tensor1 * ((self.tensor1.log()) ** 2))))
         )
-        self.tensor2.grads += self.grads * (1 / (self.tensor2 * self.tensor1.log()))
+        self.tensor2.add_grad(self.grads * (1 / (self.tensor2 * self.tensor1.log())))
 
 
 class UnaryOP(OP):
@@ -840,7 +887,7 @@ class UnaryOP(OP):
         self.shape = self.tensor1.shape
         self.parents = [self.tensor1]
 
-        self.grads = Tensor([0.0] * self.capacity, requires_grad=False)
+        self.grads = None
 
 
 class Cos(UnaryOP):
@@ -851,7 +898,7 @@ class Cos(UnaryOP):
         super().__init__(tensor1)
 
     def get_grad(self) -> None:
-        self.tensor1.grads += self.grads * -self.tensor1.sin()
+        self.tensor1.add_grad(self.grads * -self.tensor1.sin())
 
 
 class Sin(UnaryOP):
@@ -862,7 +909,7 @@ class Sin(UnaryOP):
         super().__init__(tensor1)
 
     def get_grad(self) -> None:
-        self.tensor1.grads += self.grads * self.tensor1.cos()
+        self.tensor1.add_grad(self.grads * self.tensor1.cos())
 
 
 class Tanh(UnaryOP):
@@ -873,12 +920,28 @@ class Tanh(UnaryOP):
         super().__init__(tensor1)
 
     def get_grad(self) -> None:
-        self.tensor1.grads += self.grads * (1 - (self.tensor1.tanh() ** 2))
+        self.tensor1.add_grad(self.grads * (1 - (self.tensor1.tanh() ** 2)))
 
 
-class LeakyReLU(BinaryOP):
+class LeakyReLU(OP):
     def __init__(self, tensor1, leaky_grad: float | Tensor | list = 0.01) -> None:
-        super().__init__(tensor1, Tensor(leaky_grad, requires_grad=False))
+        alpha = (
+            leaky_grad
+            if isinstance(leaky_grad, Tensor)
+            else Tensor(leaky_grad, requires_grad=False)
+        )
+        alpha.requires_grad = False
+
+        super().__init__(
+            [tensor1, alpha], True if tensor1.requires_grad else False, False
+        )
+        self.num_parents = 2
+        self.tensor1 = tensor1
+        self.tensor2 = alpha
+        self.parents = [self.tensor1, self.tensor2]
+        self.shape = self.tensor1.shape
+        self.grads = None
+
         assert len(self.tensor2) == 1, (
             "Leaky gradient must be a scalar (single-element tensor)"
         )
@@ -886,7 +949,22 @@ class LeakyReLU(BinaryOP):
         self.scalar_operands = [self.leaky_grad]
 
     def get_grad(self) -> None:
-        raise NotImplementedError
+        if not (self.requires_grad and self.tensor1.requires_grad):
+            return
+
+        if self.tensor1.flat is None:
+            raise ValueError("LeakyReLU backward requires forward input values")
+
+        alpha = (
+            self.leaky_grad.flat[0]
+            if self.leaky_grad.flat is not None
+            else float(self.leaky_grad.values[0])
+        )
+
+        # d/dx leaky_relu(x) = 1 if x>0 else alpha
+        scale = [1.0 if v > 0.0 else alpha for v in self.tensor1.flat]
+        scale_t = Tensor(scale, requires_grad=False).reshape(self.tensor1.shape)
+        self.tensor1.add_grad(self.grads * scale_t)
 
 
 def relu(x) -> LeakyReLU:
@@ -1100,6 +1178,43 @@ class TensorContext:
                 for op in kernel:
                     if type(op).__name__ == "ShapeOP":
                         op.values = op.tensor1.values
+                    elif type(op).__name__ == "ExpandOP":
+                        parent = op.tensor1
+                        if parent.values is None and parent.flat is None:
+                            raise ValueError(
+                                "ExpandOP execution requires parent values"
+                            )
+                        src_shape = list(parent.shape)
+                        tgt_shape = list(op.shape)
+                        data = parent.flat if parent.flat is not None else parent.values
+                        if hasattr(tensorops_backend, "tensor_expand"):
+                            op.values = tensorops_backend.tensor_expand(
+                                list(data), src_shape, tgt_shape
+                            )
+                        else:
+                            # Python fallback if backend helper isn't available
+                            new_capacity = reduce(mul, tgt_shape, 1)
+                            new_values = [0.0] * new_capacity
+                            src_strides = [1] * len(src_shape)
+                            stride = 1
+                            for j in range(len(src_shape) - 1, -1, -1):
+                                src_strides[j] = stride
+                                stride *= src_shape[j]
+                            tgt_strides = [1] * len(tgt_shape)
+                            stride = 1
+                            for j in range(len(tgt_shape) - 1, -1, -1):
+                                tgt_strides[j] = stride
+                                stride *= tgt_shape[j]
+                            for out_idx in range(new_capacity):
+                                src_flat_idx = 0
+                                for dim in range(len(tgt_shape)):
+                                    coord = (out_idx // tgt_strides[dim]) % tgt_shape[
+                                        dim
+                                    ]
+                                    src_coord = 0 if src_shape[dim] == 1 else coord
+                                    src_flat_idx += src_coord * src_strides[dim]
+                                new_values[out_idx] = data[src_flat_idx]
+                            op.values = new_values
                 continue
 
             kernel_result = next(res_iter)
@@ -1108,129 +1223,17 @@ class TensorContext:
 
     def execute_ops(self, lim=0, lim_kernels=0):
         self.rewrite()
-        self.finalise(lim, lim_kernels)
-        valid_kernels = [k for k in self.kernels_objs[lim_kernels:] if k is not None]
-        res = rt.execute_graph(valid_kernels)
-        # order of kernels returned from rt is the same as the order given to rt
-        self.distribute_results(res, lim_kernels)
-
-
-def visualise_graph(
-    initial_nodes, save_img=True, img_path="graph.png", display=True
-) -> None:
-    """
-    Visualizes an operator graph starting from a list of final (output) nodes.
-
-    Args:
-    -----
-    initial_nodes (Union[list[Tensor], Tensor]): A list of Tensor/OP objects that are the final nodes of the graph to visualize. The graph is built by traversing backwards.
-    save_img (bool): Whether to save the graph image to a file.
-    img_path (str): Path to save the image.
-    display (bool): Whether to display the graph using matplotlib.
-    """
-    G = nx.DiGraph()
-    labels = {}
-
-    all_nodes_map = {}
-
-    if not initial_nodes:
-        queue = []
-    elif not isinstance(initial_nodes, list):
-        queue = [initial_nodes]
-    else:
-        queue = list(initial_nodes)
-
-    visited_ids = set()
-    while queue:
-        current_node = queue.pop(0)
-        current_id = id(current_node)
-
-        if current_id in visited_ids:
-            continue
-        visited_ids.add(current_id)
-        all_nodes_map[current_id] = current_node
-
-        if hasattr(current_node, "parents") and current_node.parents is not None:
-            for parent_node in current_node.parents:
-                if id(parent_node) not in all_nodes_map:
-                    all_nodes_map[id(parent_node)] = parent_node
-                if id(parent_node) not in visited_ids:
-                    queue.append(parent_node)
-
-    if not all_nodes_map:
-        if display or save_img:
-            plt.figure(figsize=(6, 4))
-            plt.text(0.5, 0.5, "Empty graph", ha="center", va="center", fontsize=12)
-            if save_img:
-                plt.savefig(img_path, bbox_inches="tight")
-            if display:
-                plt.show()
-            plt.close()
-        return
-
-    for node_id, node_obj in all_nodes_map.items():
-        G.add_node(node_id)
-        label_text = type(node_obj).__name__
-        if hasattr(node_obj, "shape") and node_obj.shape is not None:
-            label_text += f"\nshape={node_obj.shape}"
-        labels[node_id] = label_text
-
-    for node_id, node_obj in all_nodes_map.items():
-        if hasattr(node_obj, "parents") and node_obj.parents is not None:
-            for parent_node in node_obj.parents:
-                parent_id = id(parent_node)
-                if parent_id in all_nodes_map:
-                    G.add_edge(parent_id, node_id)
-
-    if not G.nodes:
-        if display or save_img:
-            plt.figure(figsize=(6, 4))
-            plt.text(0.5, 0.5, "Empty graph", ha="center", va="center", fontsize=12)
-            if save_img:
-                plt.savefig(img_path, bbox_inches="tight")
-            if display:
-                plt.show()
-            plt.close()
-        return
-
-    try:
-        pos = nx.planar_layout(G)
-    except nx.NetworkXException:
+        # Let backend.convert_kernel know which kernel IDs will be executed in
+        # this batch so it can avoid creating LogicalInputSource deps to kernels
+        # outside the submitted set (e.g., forward kernels during backward()).
+        self._exec_lim_kernels = lim_kernels
         try:
-            pos = nx.kamada_kawai_layout(G)
-        except nx.NetworkXException:
-            pos = nx.spring_layout(G, seed=42)
-
-    node_colors = []
-    for node_id_in_graph in G.nodes():
-        node_obj = all_nodes_map[node_id_in_graph]
-
-        color = "#C1E1C1"
-        if hasattr(node_obj, "weight") and node_obj.weight:
-            color = "#FFB6C1"
-        elif hasattr(node_obj, "requires_grad") and node_obj.requires_grad:
-            color = "#00B4D9"
-        node_colors.append(color)
-
-    fig_width = max(10, G.number_of_nodes() * 0.8 if G.number_of_nodes() > 0 else 10)
-    fig_height = max(8, G.number_of_nodes() * 0.6 if G.number_of_nodes() > 0 else 8)
-    plt.figure(figsize=(fig_width, fig_height))
-
-    nx.draw(
-        G,
-        pos,
-        labels=labels,
-        with_labels=True,
-        node_size=2500,
-        node_color=node_colors,
-        font_size=9,
-        font_weight="normal",
-        arrowsize=15,
-        width=1.5,
-    )
-
-    if save_img:
-        plt.savefig(img_path, bbox_inches="tight", dpi=150)
-    if display:
-        plt.show()
-    plt.close()
+            self.finalise(lim, lim_kernels)
+            valid_kernels = [
+                k for k in self.kernels_objs[lim_kernels:] if k is not None
+            ]
+            res = rt.execute_graph(valid_kernels)
+            # order of kernels returned from rt is the same as the order given to rt
+            self.distribute_results(res, lim_kernels)
+        finally:
+            self._exec_lim_kernels = 0

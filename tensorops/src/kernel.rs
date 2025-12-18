@@ -222,6 +222,9 @@ pub struct KernelTensorOps {
     pub kernel_src: String,
 
     #[pyo3(get, set)]
+    pub work_size_override: Option<usize>,
+
+    #[pyo3(get, set)]
     pub inputs: Option<Vec<PyObject>>,
 
     #[pyo3(get)]
@@ -235,6 +238,7 @@ impl Clone for KernelTensorOps {
             kernel_type: self.kernel_type.clone(),
             kernel_id: self.kernel_id,
             kernel_src: self.kernel_src.clone(),
+            work_size_override: self.work_size_override,
             inputs: self
                 .inputs
                 .as_ref()
@@ -248,7 +252,7 @@ impl Clone for KernelTensorOps {
 #[pymethods]
 impl KernelTensorOps {
     #[new]
-    #[pyo3(signature = (kernel_type, kernel_id, num_output_bufs, custom_kernel_src=None, inputs=None, scalar_inputs=None))]
+    #[pyo3(signature = (kernel_type, kernel_id, num_output_bufs, custom_kernel_src=None, inputs=None, scalar_inputs=None, work_size_override=None))]
     pub fn new(
         kernel_type: KernelType,
         kernel_id: usize,
@@ -256,6 +260,7 @@ impl KernelTensorOps {
         custom_kernel_src: Option<String>,
         inputs: Option<Vec<PyObject>>,
         scalar_inputs: Option<Vec<Vec<f32>>>,
+        work_size_override: Option<usize>,
     ) -> PyResult<Self> {
         let kernel_src = match &kernel_type {
             KernelType::Predefined(predefined_kernel) => {
@@ -283,6 +288,7 @@ impl KernelTensorOps {
             kernel_type,
             kernel_id,
             kernel_src,
+            work_size_override,
             inputs,
             num_output_bufs,
             scalar_inputs,
@@ -312,6 +318,8 @@ impl KernelTensorOps {
     ) -> Result<(Vec<Buffer<f32>>, Vec<Buffer<f32>>, usize, Vec<f32>), PyErr> {
         let mut scalar_inputs = Vec::new();
         let mut input_ocl_buffers: Vec<Buffer<f32>> = Vec::new();
+
+        let work_size_override = self.work_size_override;
 
         let work_size_dims = if !resolved_inputs.is_empty() {
             if resolved_inputs[0].len() == 0 {
@@ -350,7 +358,16 @@ impl KernelTensorOps {
                         resolved_inputs[1].len()
                     )));
                 }
-                input_ocl_buffers[0].len()
+                let inferred = input_ocl_buffers[0].len();
+                if let Some(ws) = work_size_override {
+                    if ws != inferred {
+                        return Err(PyValueError::new_err(format!(
+                            "Kernel {}: work_size_override={} does not match inferred work size {}",
+                            self.kernel_id, ws, inferred
+                        )));
+                    }
+                }
+                inferred
             }
             // VecLeakyReLU: second input is scalar alpha
             else if self.kernel_type == KernelType::Predefined(PredefinedKernel::VecLeakyReLU)
@@ -380,7 +397,16 @@ impl KernelTensorOps {
                         resolved_inputs[1].len()
                     )));
                 }
-                input_ocl_buffers[0].len()
+                let inferred = input_ocl_buffers[0].len();
+                if let Some(ws) = work_size_override {
+                    if ws != inferred {
+                        return Err(PyValueError::new_err(format!(
+                            "Kernel {}: work_size_override={} does not match inferred work size {}",
+                            self.kernel_id, ws, inferred
+                        )));
+                    }
+                }
+                inferred
             }
             // Reduce ops: [data, pre, axis_len, post]
             else if matches!(
@@ -412,7 +438,16 @@ impl KernelTensorOps {
 
                 let pre = scalar_inputs[0] as usize;
                 let post = scalar_inputs[2] as usize;
-                pre * post
+                let inferred = pre * post;
+                if let Some(ws) = work_size_override {
+                    if ws != inferred {
+                        return Err(PyValueError::new_err(format!(
+                            "Kernel {}: work_size_override={} does not match inferred work size {}",
+                            self.kernel_id, ws, inferred
+                        )));
+                    }
+                }
+                inferred
             } else {
                 // Generic: treat every input as a buffer input.
                 for (i, inp) in resolved_inputs.iter().enumerate() {
@@ -442,16 +477,21 @@ impl KernelTensorOps {
                 }
 
                 // Work size is defined by first input buffer length.
-                input_ocl_buffers
+                let inferred = input_ocl_buffers
                     .first()
                     .ok_or_else(|| PyValueError::new_err("No inputs"))?
-                    .len()
+                    .len();
+                work_size_override.unwrap_or(inferred)
             }
         } else if self.num_output_bufs > 0 {
-            return Err(PyValueError::new_err(format!(
-                "Kernel {}: Cannot infer output size without inputs.",
-                self.kernel_id
-            )));
+            if let Some(ws) = work_size_override {
+                ws
+            } else {
+                return Err(PyValueError::new_err(format!(
+                    "Kernel {}: Cannot infer output size without inputs.",
+                    self.kernel_id
+                )));
+            }
         } else {
             0
         };
