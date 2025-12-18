@@ -1,22 +1,45 @@
 from __future__ import annotations
 
-import math
 import pickle
 from abc import ABC, abstractmethod
 from functools import reduce
 from itertools import chain
 from operator import mul, xor
+import math
 
 import matplotlib.pyplot as plt
 import networkx as nx
-import tensorops_backend
 
-from tensorops import rt
 
 # TODO
 # impl nn essentials, eg softmax, softplus, sigmoid, max, min, argmax, sum, ones, zeros, repeats
 # docstrings
 
+
+def py_flatten(lst):
+    shape = []
+
+    # Helper to determine shape recursively
+    def get_shape(x):
+        if isinstance(x, list):
+            if x:
+                return [len(x)] + get_shape(x[0])
+            else:
+                return [0]
+        else:
+            return []
+
+    # Helper to flatten recursively
+    def flatten(x):
+        if isinstance(x, list):
+            for item in x:
+                yield from flatten(item)
+        else:
+            yield x
+
+    shape = get_shape(lst)
+    flat_list = list(flatten(lst))
+    return flat_list, shape
 
 class Tensor(ABC):
     def __init__(
@@ -29,47 +52,42 @@ class Tensor(ABC):
         grad_tensor: bool = False,
     ) -> None:
         self.weight = weight
+        self._shape = None
+        self._values = None
         self.grad_tensor = grad_tensor
-        assert xor(bool(values), is_op), (
-            f"Must be either a valued Tensor or an OP, got {values}"
-        )
+        assert xor(
+            bool(values), is_op
+        ), f"Must be either a valued Tensor or an OP, got {values}"
         self.is_op = is_op
         self.enable_fusion = enable_fusion
         # user decides whether the tensor can be fused or not, for example, if the user wants to see the value of a tensor, since the value of the tensor might not be guaranteed to be present due to kernel fusion not returning intermediate results. this guarantees that the tensor value is returned
         self.available_during_exec = False
-        self.memview = None
         if values:
             if isinstance(values, (float, int)):
-                self._values = [values]
+                self.values = [values]
             elif isinstance(values, list):
-                self._values = values
+                self.values = values
             else:
                 raise ValueError("Invalid subtype inside list!")
         else:
-            assert isinstance(self, OP), (
-                "Tensor must either have value or is an instance of an OP class!"
-            )
+            assert isinstance(
+                self, OP
+            ), "Tensor must either have value or is an instance of an OP class!"
             # OP can init with no values or grad but needs shape
-            self._values = None
-            self._shape = None
 
         self.requires_grad = requires_grad
 
         if self.values:
-            self.memview, self._shape = tensorops_backend.tensor_from_list(self._values)
-            self.flat = list(self.memview)
+            self.flat, self.shape = py_flatten(self._values)
         else:
             self.flat = None
         if self.weight:
             self.requires_grad = True
         self.capacity = reduce(mul, self._shape) if self._shape else None
-        if not self.grad_tensor:
-            if self.capacity is not None:
-                self.grads = Tensor(
-                    [0.0] * self.capacity, requires_grad=False, grad_tensor=True
-                )
-            else:
-                self.grads = None
+        if not self.grad_tensor and self.capacity:
+            self.grads = Tensor(
+                [0.0] * self.capacity, requires_grad=False, grad_tensor=True
+            )
 
     @property
     def values(self):
@@ -77,11 +95,7 @@ class Tensor(ABC):
 
     @values.setter
     def values(self, new_value):
-        memview, shape = tensorops_backend.tensor_from_list(new_value)
-        _ = _check_shape(self.shape, shape)
-        self.flat = list(memview)
-        self.memview = memview
-        self.shape = shape
+        self.flat, self.shape = py_flatten(self._values)
         self._values = new_value
 
     @property
@@ -203,9 +217,9 @@ class Tensor(ABC):
         return LeakyReLU(self, leaky_grad)
 
     def seed_grad(self, seed: int) -> None:
-        assert self.values, (
-            f"Cannot seed gradient, the valued tensor must not be empty! {self}"
-        )
+        assert (
+            self.values
+        ), f"Cannot seed gradient, the valued tensor must not be empty! {self}"
         self.grads = Tensor([seed] * len(self.values), requires_grad=False)
 
     def squeeze(self):
@@ -215,9 +229,9 @@ class Tensor(ABC):
         self.shape = tuple(modify_shape)
 
     def unsqueeze(self, dim):
-        assert dim >= -1 and dim <= len(self.shape), (
-            f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
-        )
+        assert dim >= -1 and dim <= len(
+            self.shape
+        ), f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
         modify_shape = list(self.shape)
         modify_shape.insert(dim, 1)
         self.shape = tuple(modify_shape)
@@ -233,16 +247,16 @@ class Tensor(ABC):
 
     def __getitem__(self, idx):
         idx = (idx,) if isinstance(idx, int) else idx
-        assert len(idx) == len(self.shape), (
-            "Index dimensions must match tensor dimensions"
-        )
+        assert len(idx) == len(
+            self.shape
+        ), "Index dimensions must match tensor dimensions"
 
         flat_idx = 0
         stride = 1
         for i in range(len(self.shape) - 1, -1, -1):
-            assert idx[i] < self.shape[i], (
-                f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
-            )
+            assert (
+                idx[i] < self.shape[i]
+            ), f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
             flat_idx += idx[i] * stride
             stride *= self.shape[i]
 
@@ -315,7 +329,8 @@ class OP(Tensor):
                 TensorContext.current_context.add_operands(operands)
 
     @abstractmethod
-    def get_grad(self) -> None: ...
+    def get_grad(self) -> None:
+        ...
 
     def __repr__(self) -> str:
         display = f"requires_grad={self.requires_grad}, weight={self.weight}, self.shape={self.shape}"
@@ -355,9 +370,9 @@ class BinaryOP(OP):
         t1_len = len(self.tensor1)
         t2_len = len(self.tensor2)
         self.broadcast = (t1_len != t2_len) and xor(t1_len == 1, t2_len == 1)
-        assert (t1_len == t2_len) or (self.broadcast), (
-            f"Tensor lengths must match! Got {t1_len} and {t2_len}"
-        )
+        assert (t1_len == t2_len) or (
+            self.broadcast
+        ), f"Tensor lengths must match! Got {t1_len} and {t2_len}"
 
         if original_shape1 != original_shape2:
             self.shape = self.tensor1.shape
@@ -452,9 +467,9 @@ class GenericLog(BinaryOP):
     def __init__(self, tensor1, tensor2) -> None:
         super().__init__(tensor1, tensor2)
         # tensor1 is base (scalar or single-element tensor), tensor2 is input
-        assert len(self.tensor1) == 1, (
-            "Log base must be a scalar (single-element tensor)"
-        )
+        assert (
+            len(self.tensor1) == 1
+        ), "Log base must be a scalar (single-element tensor)"
         self.base_value = self.tensor1
         self.scalar_operands = [self.base_value]
 
@@ -513,9 +528,9 @@ class Tanh(UnaryOP):
 class LeakyReLU(BinaryOP):
     def __init__(self, tensor1, leaky_grad: float | Tensor | list = 0.01) -> None:
         super().__init__(tensor1, Tensor(leaky_grad, requires_grad=False))
-        assert len(self.tensor2) == 1, (
-            "Leaky gradient must be a scalar (single-element tensor)"
-        )
+        assert (
+            len(self.tensor2) == 1
+        ), "Leaky gradient must be a scalar (single-element tensor)"
         self.leaky_grad = self.tensor2
         self.scalar_operands = [self.leaky_grad]
 
@@ -533,9 +548,9 @@ def leaky_relu(x, leaky_grad=0.01) -> LeakyReLU:
 
 def _check_shape(target_shape, new_shape):
     new_shape = (new_shape,) if isinstance(new_shape, int) else new_shape
-    assert (count := new_shape.count(-1)) <= 1, (
-        f"cannot reshape tensor to shape {new_shape}"
-    )
+    assert (
+        count := new_shape.count(-1)
+    ) <= 1, f"cannot reshape tensor to shape {new_shape}"
     flat_size = reduce(mul, target_shape)
     assert flat_size % abs(flat_size) == 0, f"invalid shape {new_shape}"
     return count
@@ -616,7 +631,7 @@ class TensorContext:
                         f"  Warning: Parent {p} not found in kernel_lookup. Treating as external dependency."
                     )
                     parents_found_in_kernels = False
-                    break
+                    break  
 
             # 1. new kernel: If no OP parents OR parents belong to >1 kernel OR a parent wasn't tracked OR operation explicitly disables fusion
             if (
@@ -635,6 +650,7 @@ class TensorContext:
                     )
                     for p in op_parents
                 ]
+                print(f"  Decision: Start New Kernel {self.kernel_number}")
                 self.kernel_dependencies[self.kernel_number] = (
                     None
                     if (op.parent_data_tensors) or (all(check) and len(check) != 0)
@@ -659,21 +675,32 @@ class TensorContext:
             elif len(parent_kernel_indices) == 1:
                 target_kernel_idx = parent_kernel_indices.pop()
                 if target_kernel_idx not in self.locked_kernels:
+                    print(f"  Decision: Fuse into Kernel {target_kernel_idx}")
                     self.kernels[target_kernel_idx].append(op)
-                    self.kernel_lookup[op] = target_kernel_idx
-                    op.available_during_exec = True
+                    self.kernel_lookup[
+                        op
+                    ] = target_kernel_idx 
+                    op.available_during_exec = (
+                        True 
+                    )
                 else:
+                    print(
+                        f"  Decision: Start New Kernel {self.kernel_number} because parent does not enable fusion"
+                    )
                     self.kernels.append([op])
                     self.kernel_lookup[op] = self.kernel_number
                     op.available_during_exec = True
                     self.kernel_number += 1
 
             else:
+                print(f"  Decision: Fallback - Start New Kernel {self.kernel_number}")
                 self.kernels.append([op])
                 self.kernel_lookup[op] = self.kernel_number
                 op.available_during_exec = True
                 self.kernel_number += 1
 
+        print("\n--- Kernel Construction Complete ---")
+        print(f"Total Kernels: {len(self.kernels)}")
 
         # build custom instructions for fused kernels
         for i, k in zip(
@@ -686,16 +713,20 @@ class TensorContext:
         ):
             custom_instruction = None
             kernel_name = None
+            print(f"Kernel {i}: {[str(op) for op in k]}")
             if len(k) > 1:
+                print(f"  Kernel {i} is fused ({len(k)} ops). Building instructions...")
                 fusor = Fusor(k)
                 custom_instruction, kernel_name = fusor.build_kernel()
                 self.all_custom_instructions.append(custom_instruction)
+                print(f"  Kernel {i} instructions built.")
             kernel = Kernel(
                 [op for op in k],
                 custom_instruction,
                 i,
             )
             self.kernels_objs.append(kernel.convert_kernel(kernel_name))
+            print(custom_instruction)
 
     def forward(self):
         self.execute_ops()

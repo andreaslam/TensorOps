@@ -162,6 +162,27 @@ impl LogicalInputSource {
 
 #[pyclass(eq, module = "tensorops_backend")]
 #[derive(Debug, PartialEq, Clone)]
+pub struct DirectInput {
+    #[pyo3(get)]
+    pub data: Vec<f32>,
+}
+
+#[pymethods]
+impl DirectInput {
+    #[new]
+    fn new(data: Vec<f32>) -> Self {
+        Self { data }
+    }
+    fn __repr__(&self) -> String {
+        format!("DirectInput(len={})", self.data.len())
+    }
+    fn __str__(&self) -> String {
+        self.__repr__()
+    }
+}
+
+#[pyclass(module = "tensorops_backend")]
+#[derive(Debug)]
 pub struct KernelTensorOps {
     #[pyo3(get)]
     pub kernel_type: KernelType,
@@ -171,28 +192,39 @@ pub struct KernelTensorOps {
     pub kernel_src: String,
 
     #[pyo3(get, set)]
-    // Allow Python to set these after creation if needed, though ideally set at new()
-    pub direct_inputs: Option<Vec<Vec<f32>>>,
-
-    #[pyo3(get, set)]
-    pub logical_input_sources: Option<Vec<LogicalInputSource>>,
+    pub inputs: Option<Vec<PyObject>>,
 
     #[pyo3(get)]
     pub num_output_bufs: usize,
     pub scalar_inputs: Option<Vec<Vec<f32>>>,
 }
 
+impl Clone for KernelTensorOps {
+    fn clone(&self) -> Self {
+        Python::with_gil(|py| Self {
+            kernel_type: self.kernel_type.clone(),
+            kernel_id: self.kernel_id,
+            kernel_src: self.kernel_src.clone(),
+            inputs: self
+                .inputs
+                .as_ref()
+                .map(|v| v.iter().map(|x| x.clone_ref(py)).collect()),
+            num_output_bufs: self.num_output_bufs,
+            scalar_inputs: self.scalar_inputs.clone(),
+        })
+    }
+}
+
 #[pymethods]
 impl KernelTensorOps {
     #[new]
-    #[pyo3(signature = (kernel_type, kernel_id, num_output_bufs, custom_kernel_src=None, direct_inputs=None, logical_input_sources=None, scalar_inputs=None))]
+    #[pyo3(signature = (kernel_type, kernel_id, num_output_bufs, custom_kernel_src=None, inputs=None, scalar_inputs=None))]
     pub fn new(
         kernel_type: KernelType,
         kernel_id: usize,
         num_output_bufs: usize,
         custom_kernel_src: Option<String>,
-        direct_inputs: Option<Vec<Vec<f32>>>,
-        logical_input_sources: Option<Vec<LogicalInputSource>>,
+        inputs: Option<Vec<PyObject>>,
         scalar_inputs: Option<Vec<Vec<f32>>>,
     ) -> PyResult<Self> {
         let kernel_src = match &kernel_type {
@@ -221,8 +253,7 @@ impl KernelTensorOps {
             kernel_type,
             kernel_id,
             kernel_src,
-            direct_inputs,
-            logical_input_sources,
+            inputs,
             num_output_bufs,
             scalar_inputs,
         })
@@ -230,11 +261,10 @@ impl KernelTensorOps {
 
     fn __repr__(&self) -> String {
         format!(
-            "KernelTensorOps(kernel_id={}, type={}, direct_inputs_set={}, logical_sources_set={}, num_outputs={})",
+            "KernelTensorOps(kernel_id={}, type={}, inputs_set={}, num_outputs={})",
             self.kernel_id,
             self.kernel_type.__repr__(), // Use repr of KernelType
-            self.direct_inputs.is_some(),
-            self.logical_input_sources.is_some(),
+            self.inputs.is_some(),
             self.num_output_bufs
         )
     }

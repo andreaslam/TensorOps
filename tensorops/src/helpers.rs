@@ -20,10 +20,8 @@ const KERNEL_VEC_TANH: &str = "VecTanh";
 const KERNEL_VEC_LEAKY_RELU: &str = "VecLeakyReLU";
 
 fn extract_kernel_code(source: &str, kernel_name: &str) -> Option<String> {
-    // println!("DEBUG: Extracting kernel code for '{}'", kernel_name);
     let kernel_sig_pattern = format!("__kernel void {}", kernel_name);
     if let Some(sig_start_index) = source.find(&kernel_sig_pattern) {
-        // println!("DEBUG: Found kernel signature at index {}", sig_start_index);
         let search_start_index = source[..sig_start_index]
             .rfind("/*")
             .unwrap_or(sig_start_index);
@@ -46,13 +44,12 @@ fn extract_kernel_code(source: &str, kernel_name: &str) -> Option<String> {
             }
             if let Some(end_index) = body_end_index {
                 let snippet = source[search_start_index..=end_index].trim().to_string();
-                // println!("DEBUG: Successfully extracted kernel code for '{}'", kernel_name);
                 return Some(snippet);
             }
         }
     }
     eprintln!(
-        "DEBUG: Warning: Could not extract kernel code for '{}'",
+        "Warning: Could not extract kernel code for '{}'",
         kernel_name
     );
     None
@@ -60,7 +57,6 @@ fn extract_kernel_code(source: &str, kernel_name: &str) -> Option<String> {
 
 lazy_static! {
     static ref PREDEFINED_KERNEL_SOURCES: HashMap<PredefinedKernel, String> = {
-        // println!("DEBUG: Initializing PREDEFINED_KERNEL_SOURCES");
         let mut m = HashMap::new();
         let kernels_to_extract = [
             (PredefinedKernel::VecAdd, KERNEL_VEC_ADD),
@@ -77,30 +73,18 @@ lazy_static! {
             (PredefinedKernel::VecLeakyReLU, KERNEL_VEC_LEAKY_RELU),
         ];
         for (kernel_enum, kernel_name) in kernels_to_extract.iter() {
-            // println!("DEBUG: Extracting kernel source for '{}'", kernel_name);
             if let Some(snippet) = extract_kernel_code(&KERNEL_SRC, kernel_name) {
                 m.insert(kernel_enum.clone(), snippet);
             } else {
-                panic!("DEBUG: Kernel definition for '{}' not found or could not be parsed", kernel_name);
+                panic!("Kernel definition for '{}' not found or could not be parsed", kernel_name);
             }
         }
-        // println!("DEBUG: PREDEFINED_KERNEL_SOURCES initialized with {} kernels", m.len());
         m
     };
 }
 
 #[pyfunction]
 pub fn get_predefined_kernel_source(kernel: &PredefinedKernel) -> Option<&'static String> {
-    println!("DEBUG: Getting predefined kernel source for {:?}", kernel);
     let result = PREDEFINED_KERNEL_SOURCES.get(kernel);
-    println!(
-        "DEBUG: Kernel source for {:?}: {}",
-        kernel,
-        if result.is_some() {
-            "Found"
-        } else {
-            "Not found"
-        }
-    );
     result
 }

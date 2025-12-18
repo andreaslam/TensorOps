@@ -1,4 +1,6 @@
-use crate::kernel::{KernelResult, KernelTensorOps, KernelType, PredefinedKernel};
+use crate::kernel::{
+    DirectInput, KernelResult, KernelTensorOps, KernelType, LogicalInputSource, PredefinedKernel,
+};
 use ocl::Buffer;
 use ocl::{
     core::QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, Context, Device, Error as OclError,
@@ -41,7 +43,6 @@ impl Runtime {
         kernels_to_exec_py: Vec<PyRef<KernelTensorOps>>,
     ) -> PyResult<Vec<KernelResult>> {
         if kernels_to_exec_py.is_empty() {
-            eprintln!("[DEBUG] No kernels to execute.");
             return Ok(Vec::new());
         }
 
@@ -49,11 +50,6 @@ impl Runtime {
             .iter()
             .map(|k_ref| (**k_ref).clone())
             .collect();
-
-        eprintln!(
-            "[DEBUG] Total kernels to execute: {}",
-            current_kernels.len()
-        );
 
         let mut ids_check = HashSet::new();
         for k_info in &current_kernels {
@@ -70,9 +66,15 @@ impl Runtime {
 
         let mut runnable_kernel_ids: Vec<usize> = current_kernels
             .iter()
-            .filter(|k_info| match &k_info.logical_input_sources {
-                Some(sources) => sources.is_empty(),
-                None => true,
+            .filter(|k_info| {
+                if let Some(inputs) = &k_info.inputs {
+                    for inp in inputs {
+                        if inp.bind(py).extract::<LogicalInputSource>().is_ok() {
+                            return false;
+                        }
+                    }
+                }
+                true
             })
             .map(|k_info| k_info.kernel_id)
             .collect();
@@ -80,13 +82,7 @@ impl Runtime {
         let total_kernels_to_run = current_kernels.len();
 
         while finished_kernel_ids.len() < total_kernels_to_run {
-            py.check_signals()?; 
-                                 // eprintln!(
-                                 //     "[DEBUG] Kernels finished: {}/{}. Runnable: {:?}",
-                                 //     finished_kernel_ids.len(),
-                                 //     total_kernels_to_run,
-                                 //     runnable_kernel_ids
-                                 // );
+            py.check_signals()?;
 
             if runnable_kernel_ids.is_empty() {
                 let remaining_ids: Vec<_> = current_kernels
@@ -102,7 +98,6 @@ impl Runtime {
 
             let current_batch_ids_to_run = runnable_kernel_ids.clone();
             runnable_kernel_ids.clear();
-            // eprintln!("[DEBUG] Executing kernel batch: {:?}", current_batch_ids_to_run);
 
             let mut batch_kernel_sources = HashSet::new();
             let mut batch_queues = HashMap::new();
@@ -120,26 +115,33 @@ impl Runtime {
 
                 let mut resolved_inputs: Vec<Vec<f32>> = Vec::new();
 
-                if let Some(direct_inputs) = &kernel_info.direct_inputs {
-                    resolved_inputs.extend(direct_inputs.clone());
-                }
+                if let Some(inputs) = &kernel_info.inputs {
+                    for inp in inputs {
+                        if let Ok(direct) = inp.bind(py).extract::<DirectInput>() {
+                            resolved_inputs.push(direct.data);
+                        } else if let Ok(l_src) = inp.bind(py).extract::<LogicalInputSource>() {
+                            let src_result =
+                                results_map.get(&l_src.source_kernel_id).ok_or_else(|| {
+                                    PyRuntimeError::new_err(format!(
+                                        "Missing dependency result: {} -> {}",
+                                        kernel_info.kernel_id, l_src.source_kernel_id
+                                    ))
+                                })?;
 
-                if let Some(logical_srcs) = &kernel_info.logical_input_sources {
-                    for l_src in logical_srcs {
-                        let src_result =
-                            results_map.get(&l_src.source_kernel_id).ok_or_else(|| {
-                                PyRuntimeError::new_err(format!(
-                                    "Missing dependency result: {} -> {}",
-                                    kernel_info.kernel_id, l_src.source_kernel_id
-                                ))
-                            })?;
-
-                        let input = src_result
-                            .val
-                            .get(l_src.source_output_index)
-                            .cloned()
-                            .ok_or_else(|| PyRuntimeError::new_err("Output index out of bounds"))?;
-                        resolved_inputs.push(input);
+                            let input = src_result
+                                .val
+                                .get(l_src.source_output_index)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    PyRuntimeError::new_err("Output index out of bounds")
+                                })?;
+                            resolved_inputs.push(input);
+                        } else {
+                            return Err(PyRuntimeError::new_err(format!(
+                                "Kernel {}: Invalid input type in inputs list",
+                                kernel_info.kernel_id
+                            )));
+                        }
                     }
                 }
 
@@ -167,10 +169,6 @@ impl Runtime {
                 batch_ocl_output_buffers.insert(*kernel_id, output_bufs);
                 batch_work_sizes.insert(*kernel_id, work_size);
 
-                // eprintln!(
-                //     "[DEBUG] Prepared kernel ID {} with work size {}",
-                //     kernel_id, work_size
-                // );
             }
 
             let batch_kernel_sources_joined = batch_kernel_sources
@@ -199,11 +197,6 @@ impl Runtime {
                 batch_ocl_kernel_args.insert(*kernel_id, all_args);
                 batch_ocl_output_buffers.insert(*kernel_id, output_bufs);
                 batch_work_sizes.insert(*kernel_id, work_size);
-
-                // eprintln!(
-                //     "[DEBUG] Prepared kernel ID {} with work size {}, scalar inputs: {:?}",
-                //     kernel_id, work_size, scalar_inputs
-                // );
             }
 
             let program = Program::builder()
@@ -236,7 +229,6 @@ impl Runtime {
                         },
                     );
                     finished_kernel_ids.insert(*kernel_id);
-                    eprintln!("[DEBUG] Skipping kernel {} (work size = 0)", kernel_id);
                     continue;
                 }
 
@@ -267,7 +259,7 @@ impl Runtime {
                                         kernel_id, i.len()
                                     )));
                                     }
-                                    builder.arg(scalar_inputs); 
+                                    builder.arg(scalar_inputs);
                                 }
                             }
                         }
@@ -277,7 +269,6 @@ impl Runtime {
 
                 let k = builder.build().map_err(|e| ocl_py_err(e, "Kernel Build"))?;
                 unsafe { k.enq().map_err(|e| ocl_py_err(e, "Kernel Enqueue"))? };
-                eprintln!("[DEBUG] Enqueued kernel {} ({})", kernel_id, name);
             }
 
             for kernel_id_done in &current_batch_ids_to_run {
@@ -307,7 +298,6 @@ impl Runtime {
                 );
                 finished_kernel_ids.insert(*kernel_id_done);
                 queue.finish().map_err(|e| ocl_py_err(e, "Queue Finish"))?;
-                eprintln!("[DEBUG] Completed kernel {}", kernel_id_done);
             }
 
             for next in &current_kernels {
@@ -318,11 +308,13 @@ impl Runtime {
                 }
 
                 let mut ready = true;
-                if let Some(srcs) = &next.logical_input_sources {
-                    for src in srcs {
-                        if !finished_kernel_ids.contains(&src.source_kernel_id) {
-                            ready = false;
-                            break;
+                if let Some(inputs) = &next.inputs {
+                    for inp in inputs {
+                        if let Ok(l_src) = inp.bind(py).extract::<LogicalInputSource>() {
+                            if !finished_kernel_ids.contains(&l_src.source_kernel_id) {
+                                ready = false;
+                                break;
+                            }
                         }
                     }
                 }
@@ -332,8 +324,6 @@ impl Runtime {
                 }
             }
         }
-
-        eprintln!("[DEBUG] All kernels executed. Returning results.");
 
         let mut final_results = Vec::with_capacity(kernels_to_exec_py.len());
         for k_ref in kernels_to_exec_py {
@@ -347,7 +337,6 @@ impl Runtime {
                 )));
             }
         }
-        // eprintln!("[DEBUG] Results {:?}", final_results);
         Ok(final_results)
     }
 

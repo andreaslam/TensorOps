@@ -1,9 +1,11 @@
 import re
 import uuid
-import tensorops_backend
-from tensorops.tensor import *
 from enum import Enum
-from typing import List, Dict, Tuple, Union
+from typing import Dict, List, Tuple, Union
+
+import tensorops_backend
+
+from tensorops.tensor import *
 
 
 class KernelOP(Enum):
@@ -157,8 +159,7 @@ class Kernel:
         )
         custom_src_for_rust = self.src if not is_predefined else None
 
-        py_direct_inputs = []
-        py_logical_sources = []
+        py_inputs = []
         scalars = None
         input_tensors_for_kernel_object = []
 
@@ -193,7 +194,7 @@ class Kernel:
 
         for input_tensor in input_tensors_for_kernel_object:
             if input_tensor.values is not None:
-                py_direct_inputs.append(input_tensor.flat)
+                py_inputs.append(tensorops_backend.DirectInput(input_tensor.flat))
             else:
                 actual_op_for_lookup = input_tensor
                 source_kernel_id = TensorContext.current_context.kernel_lookup.get(
@@ -221,14 +222,13 @@ class Kernel:
                 lis = tensorops_backend.LogicalInputSource(
                     source_kernel_id, source_output_idx
                 )
-                py_logical_sources.append(lis)
+                py_inputs.append(lis)
         return tensorops_backend.KernelTensorOps(
             kernel_type=kernel_type_obj,
             kernel_id=self.kernel_id,
             num_output_bufs=len(self.op),
             custom_kernel_src=custom_src_for_rust,
-            direct_inputs=py_direct_inputs if py_direct_inputs else None,
-            logical_input_sources=(py_logical_sources if py_logical_sources else None),
+            inputs=py_inputs if py_inputs else None,
             scalar_inputs=scalars if scalars else None,
         )
 
@@ -357,10 +357,6 @@ class Fusor:
 
         # Ensure stable order for input buffer arguments from input_vars_map
         # Sort by the original tensor ID (the key in input_vars_map)
-
-        print(
-            f"DEBUG: input_vars_map={input_vars_map}, op_output_buffer_map={op_output_buffer_map}"
-        )
 
         sorted_external_input_vars = sorted(input_vars_map.items())
         for _, var_name in sorted_external_input_vars:

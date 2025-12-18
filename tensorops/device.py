@@ -108,7 +108,7 @@ def test_more_ops():
 
 def main():
     test_sanity_check()
-    # test_more_ops()
+    test_more_ops()
 
 
 if __name__ == "__main__":

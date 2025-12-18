@@ -4,7 +4,9 @@ pub mod runtime;
 pub mod tensor;
 
 use helpers::get_predefined_kernel_source;
-use kernel::{KernelResult, KernelTensorOps, KernelType, LogicalInputSource, PredefinedKernel};
+use kernel::{
+    DirectInput, KernelResult, KernelTensorOps, KernelType, LogicalInputSource, PredefinedKernel,
+};
 use pyo3::prelude::*;
 use runtime::Runtime;
 use tensor::*;
@@ -17,6 +19,7 @@ fn tensorops_backend(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<KernelResult>()?;
     m.add_class::<PredefinedKernel>()?;
     m.add_class::<LogicalInputSource>()?;
+    m.add_class::<DirectInput>()?;
     m.add_function(wrap_pyfunction!(get_predefined_kernel_source, m)?)?;
     m.add_function(wrap_pyfunction!(get_predefined_kernel_source, m)?)?;
     m.add_function(wrap_pyfunction!(get_shape, m)?)?;
