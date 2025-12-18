@@ -18,6 +18,7 @@ const KERNEL_VEC_TAN: &str = "VecTan";
 const KERNEL_VEC_ABS: &str = "VecAbs";
 const KERNEL_VEC_TANH: &str = "VecTanh";
 const KERNEL_VEC_LEAKY_RELU: &str = "VecLeakyReLU";
+const KERNEL_VEC_SUM: &str = "VecSumNew";
 
 fn extract_kernel_code(source: &str, kernel_name: &str) -> Option<String> {
     let kernel_sig_pattern = format!("__kernel void {}", kernel_name);
@@ -71,12 +72,16 @@ lazy_static! {
             (PredefinedKernel::VecAbs, KERNEL_VEC_ABS),
             (PredefinedKernel::VecTanh, KERNEL_VEC_TANH),
             (PredefinedKernel::VecLeakyReLU, KERNEL_VEC_LEAKY_RELU),
+            (PredefinedKernel::VecSum, KERNEL_VEC_SUM),
         ];
         for (kernel_enum, kernel_name) in kernels_to_extract.iter() {
             if let Some(snippet) = extract_kernel_code(&KERNEL_SRC, kernel_name) {
                 m.insert(kernel_enum.clone(), snippet);
             } else {
-                panic!("Kernel definition for '{}' not found or could not be parsed", kernel_name);
+                panic!(
+                    "Kernel definition for '{}' not found or could not be parsed",
+                    kernel_name
+                );
             }
         }
         m

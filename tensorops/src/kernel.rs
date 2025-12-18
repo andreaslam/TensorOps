@@ -57,6 +57,7 @@ pub enum PredefinedKernel {
     VecAbs,
     VecTanh,
     VecLeakyReLU,
+    VecSum,
 }
 impl fmt::Display for PredefinedKernel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -284,7 +285,6 @@ impl KernelTensorOps {
         let mut scalar_inputs = Vec::new();
         let mut buffer_inputs = Vec::new();
 
-        // Determine work size and categorize inputs
         let work_size_dims = if !resolved_input_data.is_empty() {
             if resolved_input_data[0].is_empty() {
                 return Err(PyValueError::new_err(format!(
@@ -304,10 +304,37 @@ impl KernelTensorOps {
                         self.kernel_id, resolved_input_data[1].len()
                     )));
                 }
+                buffer_inputs[0].len()
+            } else if self.kernel_type == KernelType::Predefined(PredefinedKernel::VecLeakyReLU)
+                && resolved_input_data.len() >= 2
+            {
+                if resolved_input_data[1].len() == 1 {
+                    scalar_inputs.push(resolved_input_data[1][0]);
+                    buffer_inputs.push(resolved_input_data[0].clone());
+                } else {
+                    return Err(PyValueError::new_err(format!(
+                        "Kernel {}: VecLeakyReLU expects second input (alpha) to be a scalar (length 1), got length {}.",
+                        self.kernel_id,
+                        resolved_input_data[1].len()
+                    )));
+                }
+                buffer_inputs[0].len()
+            } else if self.kernel_type == KernelType::Predefined(PredefinedKernel::VecSum)
+                && resolved_input_data.len() >= 4
+            {
+                // Input 0: data, Input 1: pre_axis, Input 2: axis_len, Input 3: post_axis
+                scalar_inputs.push(resolved_input_data[1][0]);
+                scalar_inputs.push(resolved_input_data[2][0]);
+                scalar_inputs.push(resolved_input_data[3][0]);
+                buffer_inputs.push(resolved_input_data[0].clone());
+
+                let pre = resolved_input_data[1][0] as usize;
+                let post = resolved_input_data[3][0] as usize;
+                pre * post
             } else {
                 buffer_inputs.extend(resolved_input_data.clone());
+                buffer_inputs[0].len()
             }
-            buffer_inputs[0].len()
         } else if self.num_output_bufs > 0 {
             return Err(PyValueError::new_err(format!(
                 "Kernel {}: Cannot determine buffer dimensions for outputs with no resolved input data to infer shape.", self.kernel_id
@@ -325,7 +352,12 @@ impl KernelTensorOps {
 
         let mut input_ocl_buffers = Vec::with_capacity(buffer_inputs.len());
         for (i, vec_data) in buffer_inputs.iter().enumerate() {
-            if vec_data.len() != work_size_dims {
+            // For VecSum, the input buffer (index 0) is larger than the work size (output size).
+            // So we skip the length check for it.
+            let is_vec_sum_input =
+                self.kernel_type == KernelType::Predefined(PredefinedKernel::VecSum) && i == 0;
+
+            if !is_vec_sum_input && vec_data.len() != work_size_dims {
                 return Err(PyValueError::new_err(format!(
                     "Kernel {}: Input vector {} length mismatch: expected {}, got {}.",
                     self.kernel_id,
@@ -337,7 +369,7 @@ impl KernelTensorOps {
             let ocl_buffer = Buffer::<f32>::builder()
                 .queue(queue.clone())
                 .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
-                .len(work_size_dims)
+                .len(vec_data.len())
                 .copy_host_slice(vec_data.as_slice())
                 .build()
                 .map_err(|e| {

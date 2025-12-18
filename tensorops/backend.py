@@ -45,6 +45,9 @@ class KernelOP(Enum):
     VecLeakyReLU = tensorops_backend.KernelType.predefined(
         tensorops_backend.PredefinedKernel.VecLeakyReLU
     )
+    VecSum = tensorops_backend.KernelType.predefined(
+        tensorops_backend.PredefinedKernel.VecSum
+    )
 
 
 class PredefinedKernel(Enum):
@@ -60,6 +63,7 @@ class PredefinedKernel(Enum):
     VecAbs = tensorops_backend.PredefinedKernel.VecAbs
     VecTanh = tensorops_backend.PredefinedKernel.VecTanh
     VecLeakyReLU = tensorops_backend.PredefinedKernel.VecLeakyReLU
+    VecSum = tensorops_backend.PredefinedKernel.VecSum
 
 
 def prepare_kernel_snippets():
@@ -109,10 +113,8 @@ def prepare_kernel_snippets():
     return matches
 
 
-# Global dictionary holding the kernel snippet patterns.
+# global dictionary holding the kernel snippet patterns
 pattern = prepare_kernel_snippets()
-# print("Prepared Kernel Snippets (Keys are User Enum Members):")
-# print(*[(k.name, v) for k, v in pattern.items()], sep="\n")
 
 op_map = {
     Add: PredefinedKernel.VecAdd,
@@ -125,6 +127,7 @@ op_map = {
     LeakyReLU: PredefinedKernel.VecLeakyReLU,
     Pow: PredefinedKernel.VecPow,
     GenericLog: PredefinedKernel.VecLog,
+    Sum: PredefinedKernel.VecSum,
 }
 
 
@@ -132,12 +135,12 @@ class Kernel:
     def __init__(
         self, op_list: List[OP], custom_src_str: Union[str, None], kernel_id_val: int
     ):
-        self.op: List[
-            OP
-        ] = op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
-        self.src: Union[
-            str, None
-        ] = custom_src_str  # Custom source from Fusor, or None for predefined
+        self.op: List[OP] = (
+            op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
+        )
+        self.src: Union[str, None] = (
+            custom_src_str  # Custom source from Fusor, or None for predefined
+        )
 
         # self.deps is not directly used for KernelTensorOps creation anymore in the new way
         # self.inputs (direct_initial_inputs) is used for direct_inputs field
@@ -149,6 +152,9 @@ class Kernel:
     def convert_kernel(
         self, fusor_kernel_name_if_custom: Union[str, None]
     ) -> tensorops_backend.KernelTensorOps:
+        if type(self.op[0]).__name__ == "ShapeOP":
+            return None
+
         is_predefined = len(self.op) == 1
         kernel_type_obj = (
             tensorops_backend.KernelType.predefined(op_map[type(self.op[0])].value)
@@ -165,14 +171,16 @@ class Kernel:
 
         if is_predefined:
             if scalars := self.op[0].scalar_operands:
-                assert (
-                    len(self.op[0].parents) == 2
-                ), "GenericLog expects two parents (base, input)"
+                if type(self.op[0]).__name__ == "GenericLog":
+                    assert len(self.op[0].parents) == 2, (
+                        "GenericLog expects two parents (base, input)"
+                    )
                 for scalar in scalars:
                     assert len(scalar.values) == 1, "Scalar must be a single value"
                 input_tensors = set(self.op[0].parents).difference(set(scalars))
                 for input_tensor in input_tensors:
                     input_tensors_for_kernel_object.append(input_tensor)
+                input_tensors_for_kernel_object.extend(scalars)
             else:
                 # For other predefined ops, include all parents
                 input_tensors_for_kernel_object.extend(self.op[0].parents)
@@ -184,9 +192,9 @@ class Kernel:
                 for parent_tensor_obj in op_in_fuse.parents:
                     if id(parent_tensor_obj) not in seen_internal_op_ids:
                         if id(parent_tensor_obj) not in temp_external_inputs_map:
-                            temp_external_inputs_map[
-                                id(parent_tensor_obj)
-                            ] = parent_tensor_obj
+                            temp_external_inputs_map[id(parent_tensor_obj)] = (
+                                parent_tensor_obj
+                            )
             sorted_external_input_items = sorted(temp_external_inputs_map.items())
             input_tensors_for_kernel_object.extend(
                 [tensor for _, tensor in sorted_external_input_items]
@@ -238,9 +246,9 @@ class Kernel:
 
 class Fusor:
     def __init__(self, fuse_ops: List[OP]) -> None:
-        assert all(
-            isinstance(op, OP) for op in fuse_ops
-        ), "All items in fuse_ops must be OP instances"
+        assert all(isinstance(op, OP) for op in fuse_ops), (
+            "All items in fuse_ops must be OP instances"
+        )
         self.fuse_ops = fuse_ops  # List of OP objects to be fused
         self.kernel_name = "custom_fused_" + uuid.uuid4().hex[:10]
         self.kernel_instructions: str | None = None

@@ -19,6 +19,8 @@ fn ocl_py_err(e: OclError, context: &str) -> PyErr {
 pub struct Runtime {
     context: Context,
     device: Device,
+    queue: Queue,
+    program_cache: HashMap<String, Program>,
 }
 
 #[pymethods]
@@ -33,7 +35,19 @@ impl Runtime {
             .devices(device.clone())
             .build()
             .map_err(|e| ocl_py_err(e, "Context Creation"))?;
-        Ok(Self { context, device })
+        let queue = Queue::new(
+            &context,
+            device.clone(),
+            Some(QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE),
+        )
+        .map_err(|e| ocl_py_err(e, "Queue Creation"))?;
+
+        Ok(Self {
+            context,
+            device,
+            queue,
+            program_cache: HashMap::new(),
+        })
     }
 
     #[pyo3(text_signature = "($self, kernels_to_exec_py)")]
@@ -99,13 +113,15 @@ impl Runtime {
             let current_batch_ids_to_run = runnable_kernel_ids.clone();
             runnable_kernel_ids.clear();
 
+            let queue = self.queue.clone();
+
             let mut batch_kernel_sources = HashSet::new();
-            let mut batch_queues = HashMap::new();
             let mut batch_resolved_kernel_data: HashMap<usize, (KernelTensorOps, Vec<Vec<f32>>)> =
                 HashMap::new();
             let mut batch_ocl_output_buffers: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
             let mut batch_ocl_kernel_args: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
             let mut batch_work_sizes: HashMap<usize, usize> = HashMap::new();
+            let mut batch_scalar_args: HashMap<usize, Vec<f32>> = HashMap::new();
 
             for kernel_id_to_run in &current_batch_ids_to_run {
                 let kernel_info = current_kernels
@@ -151,73 +167,44 @@ impl Runtime {
 
             for (kernel_id, (kernel_info, resolved_inputs)) in &batch_resolved_kernel_data {
                 batch_kernel_sources.insert(kernel_info.kernel_src.as_str());
-                let queue = Queue::new(
-                    &self.context,
-                    self.device.clone(),
-                    Some(QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE),
-                )
-                .map_err(|e| ocl_py_err(e, "Queue Creation"))?;
-
-                let (input_bufs, output_bufs, work_size, _scalar_inputs) = kernel_info
-                    .prepare_ocl_buffers_from_resolved_inputs(&queue, resolved_inputs)?;
-
-                let mut all_args = input_bufs.clone();
-                all_args.extend(output_bufs.clone());
-
-                batch_queues.insert(*kernel_id, queue);
-                batch_ocl_kernel_args.insert(*kernel_id, all_args);
-                batch_ocl_output_buffers.insert(*kernel_id, output_bufs);
-                batch_work_sizes.insert(*kernel_id, work_size);
-
-            }
-
-            let batch_kernel_sources_joined = batch_kernel_sources
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n\n");
-
-            let program = Program::builder()
-                .src(batch_kernel_sources_joined.clone())
-                .devices(self.device.clone())
-                .build(&self.context)
-                .map_err(|e| ocl_py_err(e, "Program Build"))?;
-
-            for kernel_id in &current_batch_ids_to_run {
-                let (kernel_info, resolved_inputs) =
-                    batch_resolved_kernel_data.get(kernel_id).unwrap();
-                let queue = batch_queues.get(kernel_id).unwrap();
                 let (input_bufs, output_bufs, work_size, scalar_inputs) = kernel_info
                     .prepare_ocl_buffers_from_resolved_inputs(&queue, resolved_inputs)?;
 
                 let mut all_args = input_bufs.clone();
                 all_args.extend(output_bufs.clone());
 
-                batch_queues.insert(*kernel_id, queue.clone());
                 batch_ocl_kernel_args.insert(*kernel_id, all_args);
                 batch_ocl_output_buffers.insert(*kernel_id, output_bufs);
                 batch_work_sizes.insert(*kernel_id, work_size);
+                batch_scalar_args.insert(*kernel_id, scalar_inputs);
             }
 
-            let program = Program::builder()
-                .src(
-                    batch_kernel_sources
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                        .join("\n\n"),
-                )
-                .devices(self.device.clone())
-                .build(&self.context)
-                .map_err(|e| ocl_py_err(e, "Program Build"))?;
+            // Stabilize source ordering so cache hits are reliable.
+            let mut batch_kernel_sources_vec = batch_kernel_sources.into_iter().collect::<Vec<_>>();
+            batch_kernel_sources_vec.sort_unstable();
+            let program_src = batch_kernel_sources_vec.join("\n\n");
+
+            let program = if let Some(p) = self.program_cache.get(&program_src) {
+                p.clone()
+            } else {
+                let p = Program::builder()
+                    .src(program_src.clone())
+                    .devices(self.device.clone())
+                    .build(&self.context)
+                    .map_err(|e| ocl_py_err(e, "Program Build"))?;
+                self.program_cache.insert(program_src.clone(), p.clone());
+                p
+            };
 
             for kernel_id in &current_batch_ids_to_run {
-                let (kernel_info, resolved_inputs) =
+                let (kernel_info, _resolved_inputs) =
                     batch_resolved_kernel_data.get(kernel_id).unwrap();
-                let queue = batch_queues.get(kernel_id).unwrap();
                 let args = batch_ocl_kernel_args.get(kernel_id).unwrap();
                 let work_size = *batch_work_sizes.get(kernel_id).unwrap();
-                let (_, _, _, scalar_inputs) = kernel_info
-                    .prepare_ocl_buffers_from_resolved_inputs(&queue, resolved_inputs)?;
+                let scalar_inputs = batch_scalar_args
+                    .get(kernel_id)
+                    .cloned()
+                    .unwrap_or_else(Vec::new);
 
                 if work_size == 0 {
                     let empty_outputs = vec![Vec::new(); kernel_info.num_output_bufs];
@@ -233,7 +220,13 @@ impl Runtime {
                 }
 
                 let name = match &kernel_info.kernel_type {
-                    KernelType::Predefined(pk) => pk.to_string(),
+                    KernelType::Predefined(pk) => {
+                        if *pk == PredefinedKernel::VecSum {
+                            "VecSumNew".to_string()
+                        } else {
+                            pk.to_string()
+                        }
+                    }
                     KernelType::Custom(cn) => cn.clone(),
                 };
 
@@ -244,27 +237,14 @@ impl Runtime {
                     .queue(queue.clone())
                     .global_work_size(work_size);
 
-                for arg in args {
+                // Buffer args first (all inputs + all outputs)
+                for arg in args.iter() {
                     builder.arg(arg);
                 }
 
-                match &kernel_info.scalar_inputs {
-                    Some(inputs) => {
-                        for i in inputs.iter() {
-                            if i.len() > 0 {
-                                for scalar_inputs in i.iter() {
-                                    if i.len() != 1 {
-                                        return Err(PyRuntimeError::new_err(format!(
-                                        "Kernel {}: VecLog expects exactly one scalar input (base), got {}.",
-                                        kernel_id, i.len()
-                                    )));
-                                    }
-                                    builder.arg(scalar_inputs);
-                                }
-                            }
-                        }
-                    }
-                    None => {}
+                // Then scalar args (VecLog, VecLeakyReLU, VecSum, etc.)
+                for s in scalar_inputs {
+                    builder.arg(s);
                 }
 
                 let k = builder.build().map_err(|e| ocl_py_err(e, "Kernel Build"))?;
@@ -278,7 +258,6 @@ impl Runtime {
 
                 let (kernel_info, _) = batch_resolved_kernel_data.get(kernel_id_done).unwrap();
                 let output_bufs = batch_ocl_output_buffers.get(kernel_id_done).unwrap();
-                let queue = batch_queues.get(kernel_id_done).unwrap();
 
                 let mut outputs = Vec::with_capacity(kernel_info.num_output_bufs);
                 for buf in output_bufs {
@@ -297,8 +276,10 @@ impl Runtime {
                     },
                 );
                 finished_kernel_ids.insert(*kernel_id_done);
-                queue.finish().map_err(|e| ocl_py_err(e, "Queue Finish"))?;
             }
+
+            // Ensure all enqueued work is complete before scheduling dependent kernels.
+            queue.finish().map_err(|e| ocl_py_err(e, "Queue Finish"))?;
 
             for next in &current_kernels {
                 if finished_kernel_ids.contains(&next.kernel_id)
