@@ -1097,6 +1097,12 @@ class TensorContext:
         self.all_custom_instructions = []
         self.completed_kernels = []
 
+        # Track the portion of the graph that has already been finalised/executed.
+        # This enables calling forward() multiple times on the same context without
+        # re-emitting kernels with duplicate IDs.
+        self._forward_op_cursor = 0
+        self._forward_kernel_cursor = 0
+
         # Lazy result distribution cache: map KernelResult identity -> Python lists.
         # This avoids repeated expensive Rust->Python conversions for fused kernels.
         self._kernel_val_cache = {}
@@ -1248,12 +1254,7 @@ class TensorContext:
 
         # build custom instructions for fused kernels
         for i, k in zip(
-            (
-                range(lim_kernels, len(self.kernels))
-                if lim_kernels
-                else range(len(self.kernels))
-            ),
-            self.kernels[lim_kernels:],
+            range(lim_kernels, len(self.kernels)), self.kernels[lim_kernels:]
         ):
             custom_instruction = None
             kernel_name = None
@@ -1269,8 +1270,12 @@ class TensorContext:
             self.kernels_objs.append(kernel.convert_kernel(kernel_name))
 
     def forward(self):
-        self.execute_ops()
+        # Execute only the new portion of the graph since the last forward().
+        # This prevents duplicate kernel IDs when forward() is called multiple times.
+        self.execute_ops(self._forward_op_cursor, self._forward_kernel_cursor)
         self.completed_kernels = [op for k in self.kernels for op in k]
+        self._forward_op_cursor = len(self.ops)
+        self._forward_kernel_cursor = len(self.kernels_objs)
 
     def backward(self):
         # Seed gradients for true graph outputs only.
@@ -1330,6 +1335,10 @@ class TensorContext:
         self.kernels_objs = self.kernels_objs[
             :backward_kernel_start
         ]  # reset graph to pre-backward
+
+        # Keep forward cursors consistent with the restored (pre-backward) graph.
+        self._forward_op_cursor = len(self.ops)
+        self._forward_kernel_cursor = len(self.kernels_objs)
 
     def distribute_results(self, execution_results, lim_kernels=0):
         res_iter = iter(execution_results)
