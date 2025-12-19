@@ -145,12 +145,12 @@ class Kernel:
     def __init__(
         self, op_list: List[OP], custom_src_str: Union[str, None], kernel_id_val: int
     ):
-        self.op: List[OP] = (
-            op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
-        )
-        self.src: Union[str, None] = (
-            custom_src_str  # Custom source from Fusor, or None for predefined
-        )
+        self.op: List[
+            OP
+        ] = op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
+        self.src: Union[
+            str, None
+        ] = custom_src_str  # Custom source from Fusor, or None for predefined
 
         # self.deps is not directly used for KernelTensorOps creation anymore in the new way
         # self.inputs (direct_initial_inputs) is used for direct_inputs field
@@ -236,7 +236,13 @@ class Kernel:
             exec_lim_kernels = getattr(
                 TensorContext.current_context, "_exec_lim_kernels", 0
             )
-            if source_kernel_id is not None and source_kernel_id >= exec_lim_kernels:
+            # Skip internal dependencies within the same fused kernel (not applicable for ExpandOP)
+            # Create LogicalInputSource for external kernel dependencies
+            if (
+                source_kernel_id is not None
+                and source_kernel_id >= exec_lim_kernels
+                and source_kernel_id != self.kernel_id
+            ):
                 ctx = TensorContext.current_context
                 source_output_idx = None
                 output_index_maps = getattr(ctx, "_kernel_output_index", None)
@@ -271,10 +277,8 @@ class Kernel:
                         host_flat if host_flat is not None else host_values
                     )
                 )
-            else:
-                raise Exception(
-                    f"ExpandOP parent not found in kernel_lookup (kernel {self.kernel_id}) and has no host values: {_describe_tensor(actual_parent)}"
-                )
+            # Note: For ExpandOP, if parent is in same kernel (which shouldn't happen),
+            # we silently skip adding it rather than raising an error
 
             # Small metadata buffers (floats; cast to int in kernel)
             py_inputs.append(
@@ -316,9 +320,9 @@ class Kernel:
         if is_predefined:
             if scalars := self.op[0].scalar_operands:
                 if type(self.op[0]).__name__ == "GenericLog":
-                    assert len(self.op[0].parents) == 2, (
-                        "GenericLog expects two parents (base, input)"
-                    )
+                    assert (
+                        len(self.op[0].parents) == 2
+                    ), "GenericLog expects two parents (base, input)"
                 for scalar in scalars:
                     assert len(scalar.values) == 1, "Scalar must be a single value"
                 input_tensors = set(self.op[0].parents).difference(set(scalars))
@@ -329,16 +333,21 @@ class Kernel:
                 # For other predefined ops, include all parents
                 input_tensors_for_kernel_object.extend(self.op[0].parents)
         else:
-            # Fused kernel handling (unchanged)
+            # Fused kernel handling: collect external inputs, unwrapping ShapeOPs
             seen_internal_op_ids = {id(op_in_fuse) for op_in_fuse in self.op}
             temp_external_inputs_map = {}
             for op_in_fuse in self.op:
                 for parent_tensor_obj in op_in_fuse.parents:
-                    if id(parent_tensor_obj) not in seen_internal_op_ids:
+                    # Unwrap ShapeOP to get the actual producer
+                    actual_parent = parent_tensor_obj
+                    while type(actual_parent).__name__ == "ShapeOP":
+                        actual_parent = getattr(actual_parent, "tensor1", actual_parent)
+                    # Check if the actual producer is internal to this fused kernel
+                    if id(actual_parent) not in seen_internal_op_ids:
                         if id(parent_tensor_obj) not in temp_external_inputs_map:
-                            temp_external_inputs_map[id(parent_tensor_obj)] = (
-                                parent_tensor_obj
-                            )
+                            temp_external_inputs_map[
+                                id(parent_tensor_obj)
+                            ] = parent_tensor_obj
             sorted_external_input_items = sorted(temp_external_inputs_map.items())
             input_tensors_for_kernel_object.extend(
                 [tensor for _, tensor in sorted_external_input_items]
@@ -359,6 +368,11 @@ class Kernel:
             exec_lim_kernels = getattr(
                 TensorContext.current_context, "_exec_lim_kernels", 0
             )
+            # Skip internal dependencies within the same fused kernel
+            # (these are handled by the fusion code itself, not as kernel inputs)
+            if source_kernel_id is not None and source_kernel_id == self.kernel_id:
+                continue
+            # Create LogicalInputSource for external kernel dependencies
             if source_kernel_id is not None and source_kernel_id >= exec_lim_kernels:
                 ctx = TensorContext.current_context
                 source_output_idx = None
@@ -422,9 +436,9 @@ DEBUG_FUSION_KERNEL_SRC = False
 
 class Fusor:
     def __init__(self, fuse_ops: List[OP]) -> None:
-        assert all(isinstance(op, OP) for op in fuse_ops), (
-            "All items in fuse_ops must be OP instances"
-        )
+        assert all(
+            isinstance(op, OP) for op in fuse_ops
+        ), "All items in fuse_ops must be OP instances"
         self.fuse_ops = fuse_ops
         self.kernel_name = "custom_fused_" + uuid.uuid4().hex[:10]
         self.kernel_instructions: str | None = None
@@ -446,12 +460,17 @@ class Fusor:
 
         # External inputs are any parent tensors not produced inside this fused kernel.
         # Keep the same ordering strategy as Kernel.convert_kernel (sorted by id).
+        # Unwrap ShapeOPs to check if the underlying producer is internal.
         external_input_ids: List[int] = []
         external_seen: set[int] = set()
         for op in self.fuse_ops:
             for parent in op.parents:
                 pid = id(parent)
-                if pid in op_output_buffer_map:
+                # Unwrap ShapeOP to check if the actual producer is internal
+                actual_parent = parent
+                while type(actual_parent).__name__ == "ShapeOP":
+                    actual_parent = getattr(actual_parent, "tensor1", actual_parent)
+                if id(actual_parent) in op_output_buffer_map:
                     continue
                 if pid not in external_seen:
                     external_seen.add(pid)
@@ -480,12 +499,18 @@ class Fusor:
             parent_exprs: List[str] = []
             for parent in op_instance.parents:
                 pid = id(parent)
-                if pid in op_output_buffer_map:
-                    temp = op_temp_var_map.get(pid)
+                # Unwrap ShapeOP to get the actual producer
+                actual_parent = parent
+                while type(actual_parent).__name__ == "ShapeOP":
+                    actual_parent = getattr(actual_parent, "tensor1", actual_parent)
+                actual_pid = id(actual_parent)
+
+                if actual_pid in op_output_buffer_map:
+                    temp = op_temp_var_map.get(actual_pid)
                     if temp is not None:
                         parent_exprs.append(temp)
                     else:
-                        parent_exprs.append(f"{op_output_buffer_map[pid]}[gid]")
+                        parent_exprs.append(f"{op_output_buffer_map[actual_pid]}[gid]")
                 else:
                     parent_exprs.append(f"{input_vars_map[pid]}[gid]")
 

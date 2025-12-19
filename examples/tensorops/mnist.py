@@ -2,14 +2,14 @@
 # This code is to be used as comparison with examples/pytorch/mnist.py
 
 
+import gzip
 import os
 import struct
-import gzip
 from urllib.request import urlretrieve
 
-from tensorops.tensor import Tensor, TensorContext, LeakyReLU
+from tensorops.loss import MSELoss
+from tensorops.tensor import LeakyReLU, Tensor, TensorContext
 from tensorops.tensormodel import Model
-from tensorops.tensorloss import MSELoss
 
 MNIST_URLS = {
     "train_images": "https://ossci-datasets.s3.amazonaws.com/mnist/train-images-idx3-ubyte.gz",
@@ -37,9 +37,9 @@ def extract_images(filepath):
     """Extract images from the .gz file and return them as a list of lists."""
     with gzip.open(filepath, "rb") as f:
         magic_number, num_images, rows, cols = struct.unpack(">IIII", f.read(16))
-        assert (
-            magic_number == 2051
-        ), f"Invalid magic number {magic_number} in image file."
+        assert magic_number == 2051, (
+            f"Invalid magic number {magic_number} in image file."
+        )
 
         images = []
         for _ in range(num_images):
@@ -52,9 +52,9 @@ def extract_labels(filepath):
     """Extract labels from the .gz file and return them as a list."""
     with gzip.open(filepath, "rb") as f:
         magic_number, num_labels = struct.unpack(">II", f.read(8))
-        assert (
-            magic_number == 2049
-        ), f"Invalid magic number {magic_number} in label file."
+        assert magic_number == 2049, (
+            f"Invalid magic number {magic_number} in label file."
+        )
 
         labels = list(f.read(num_labels))
         return labels
@@ -130,4 +130,5 @@ with TensorContext() as tc:
     # impl batching
     # impl backward
     # impl optim
+    # impl device
     # impl device

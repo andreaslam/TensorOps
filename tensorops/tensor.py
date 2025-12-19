@@ -29,9 +29,9 @@ class Tensor(ABC):
         self.weight = weight
         self.grad_tensor = grad_tensor
         has_value = values is not None
-        assert xor(has_value, is_op), (
-            f"Must be either a valued Tensor or an OP, got {values}"
-        )
+        assert xor(
+            has_value, is_op
+        ), f"Must be either a valued Tensor or an OP, got {values}"
         self.is_op = is_op
         self.enable_fusion = enable_fusion
         # user decides whether the tensor can be fused or not, for example, if the user wants to see the value of a tensor, since the value of the tensor might not be guaranteed to be present due to kernel fusion not returning intermediate results. this guarantees that the tensor value is returned
@@ -45,9 +45,9 @@ class Tensor(ABC):
             else:
                 raise ValueError("Invalid subtype inside list!")
         else:
-            assert isinstance(self, OP), (
-                "Tensor must either have value or is an instance of an OP class!"
-            )
+            assert isinstance(
+                self, OP
+            ), "Tensor must either have value or is an instance of an OP class!"
             # OP can init with no values or grad but needs shape
             self._values = None
             self._shape = None
@@ -191,9 +191,9 @@ class Tensor(ABC):
     def reshape(self, shape) -> ShapeOP:
         # support -1 reshaping (unknown)
         shape = (shape,) if isinstance(shape, int) else shape
-        assert (count := shape.count(-1)) <= 1, (
-            f"cannot reshape tensor to shape {shape}"
-        )
+        assert (
+            count := shape.count(-1)
+        ) <= 1, f"cannot reshape tensor to shape {shape}"
         assert len(self) % abs(reduce(mul, shape)) == 0, f"invalid shape {shape}"
         dim_size = len(self) // abs(reduce(mul, shape))
         if count == 1:
@@ -495,7 +495,10 @@ class Tensor(ABC):
         return Pow(Tensor(math.e, requires_grad=False), self)
 
     def log(self, base: float | Tensor = math.e):
-        return GenericLog(base if isinstance(base, Tensor) else Tensor(base), self)
+        return GenericLog(
+            base if isinstance(base, Tensor) else Tensor(base, requires_grad=False),
+            self,
+        )
 
     def log10(self):
         return GenericLog(Tensor(10, requires_grad=False), self)
@@ -539,9 +542,9 @@ class Tensor(ABC):
         self.shape = tuple(modify_shape)
 
     def unsqueeze(self, dim):
-        assert dim >= -1 and dim <= len(self.shape), (
-            f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
-        )
+        assert dim >= -1 and dim <= len(
+            self.shape
+        ), f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
         modify_shape = list(self.shape)
         modify_shape.insert(dim, 1)
         self.shape = tuple(modify_shape)
@@ -564,16 +567,16 @@ class Tensor(ABC):
 
     def __getitem__(self, idx):
         idx = (idx,) if isinstance(idx, int) else idx
-        assert len(idx) == len(self.shape), (
-            "Index dimensions must match tensor dimensions"
-        )
+        assert len(idx) == len(
+            self.shape
+        ), "Index dimensions must match tensor dimensions"
 
         flat_idx = 0
         stride = 1
         for i in range(len(self.shape) - 1, -1, -1):
-            assert idx[i] < self.shape[i], (
-                f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
-            )
+            assert (
+                idx[i] < self.shape[i]
+            ), f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
             flat_idx += idx[i] * stride
             stride *= self.shape[i]
 
@@ -656,7 +659,8 @@ class OP(Tensor):
                 TensorContext.current_context.add_operands(operands)
 
     @abstractmethod
-    def get_grad(self) -> None: ...
+    def get_grad(self) -> None:
+        ...
 
     def __repr__(self) -> str:
         display = f"requires_grad={self.requires_grad}, weight={self.weight}, self.shape={self.shape}"
@@ -873,9 +877,9 @@ class BinaryOP(OP):
         t1_len = len(self.tensor1)
         t2_len = len(self.tensor2)
         self.broadcast = (t1_len != t2_len) and xor(t1_len == 1, t2_len == 1)
-        assert (t1_len == t2_len) or (self.broadcast), (
-            f"Tensor lengths must match! Got {t1_len} and {t2_len}"
-        )
+        assert (t1_len == t2_len) or (
+            self.broadcast
+        ), f"Tensor lengths must match! Got {t1_len} and {t2_len}"
 
         if original_shape1 != original_shape2:
             self.shape = self.tensor1.shape
@@ -883,20 +887,10 @@ class BinaryOP(OP):
             self.shape = original_shape1
 
         if self.broadcast:
+            # Don't broadcast scalar tensors in place - this was causing issues where
+            # scalar constants like Tensor(math.e) were being modified.
+            # The backend will handle broadcasting during execution.
             shape_copy = max(self.tensor1, self.tensor2, key=lambda x: len(x))
-            broadcasted = min(self.tensor1, self.tensor2, key=lambda x: len(x))
-
-            # Broadcast a scalar (len==1) to match the other operand without
-            # going through the `values` setter (which preserves existing shape).
-            if broadcasted.values is not None and len(broadcasted) == 1:
-                target_len = max(t1_len, t2_len)
-                broadcasted._values = broadcasted.values * target_len
-                broadcasted.memview, _ = tensorops_backend.tensor_from_list(
-                    broadcasted._values
-                )
-                broadcasted.flat = list(broadcasted.memview)
-                broadcasted._shape = shape_copy.shape
-                broadcasted.capacity = reduce(mul, broadcasted._shape, 1)
             self.shape = shape_copy.shape
 
         self.grads = None
@@ -953,11 +947,12 @@ class Pow(BinaryOP):
 
 class GenericLog(BinaryOP):
     def __init__(self, tensor1, tensor2) -> None:
-        super().__init__(tensor1, tensor2)
         # tensor1 is base (scalar or single-element tensor), tensor2 is input
-        assert len(self.tensor1) == 1, (
-            "Log base must be a scalar (single-element tensor)"
-        )
+        # Check before calling super().__init__ because BinaryOP will broadcast tensors
+        assert (
+            len(tensor1) == 1
+        ), f"Log base must be a scalar (single-element tensor), got length {len(tensor1)}"
+        super().__init__(tensor1, tensor2)
         self.base_value = self.tensor1
         self.scalar_operands = [self.base_value]
 
@@ -1032,9 +1027,9 @@ class LeakyReLU(OP):
         self.shape = self.tensor1.shape
         self.grads = None
 
-        assert len(self.tensor2) == 1, (
-            "Leaky gradient must be a scalar (single-element tensor)"
-        )
+        assert (
+            len(self.tensor2) == 1
+        ), "Leaky gradient must be a scalar (single-element tensor)"
         self.leaky_grad = self.tensor2
         self.scalar_operands = [self.leaky_grad]
 
@@ -1067,9 +1062,9 @@ def leaky_relu(x, leaky_grad=0.01) -> LeakyReLU:
 
 def _check_shape(target_shape, new_shape):
     new_shape = (new_shape,) if isinstance(new_shape, int) else new_shape
-    assert (count := new_shape.count(-1)) <= 1, (
-        f"cannot reshape tensor to shape {new_shape}"
-    )
+    assert (
+        count := new_shape.count(-1)
+    ) <= 1, f"cannot reshape tensor to shape {new_shape}"
     flat_size = reduce(mul, target_shape)
     assert flat_size % abs(flat_size) == 0, f"invalid shape {new_shape}"
     return count

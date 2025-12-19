@@ -80,7 +80,7 @@ class PlotterUtil:
 
 
 def visualise_graph(
-    initial_nodes, save_img=True, img_path="graph.png", display=True
+    initial_nodes, save_img=True, img_path="graph.png", display=False
 ) -> None:
     """
     Visualizes an operator graph starting from a list of final (output) nodes.
