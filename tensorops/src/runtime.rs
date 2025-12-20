@@ -29,40 +29,35 @@ pub struct Runtime {
     program_cache: HashMap<String, Program>,
 }
 
-fn pick_device() -> Device{
-    // Collect all GPUs across all platforms
-    let mut gpus: Vec<Device> = Platform::list().iter()
-        .filter_map(|platform| {
-            Device::list(*platform, Some(DeviceType::GPU)).ok()
-        })
-        .flatten()
-        .collect();
-
-    // Pick GPU with maximum compute units
-    let device = if !gpus.is_empty() {
-        gpus.into_iter().max_by_key(|d| {
-            match d.info(DeviceInfo::MaxComputeUnits).unwrap() {
-                ocl::enums::DeviceInfoResult::MaxComputeUnits(units) => units,
-                _ => 0,
+fn pick_platform_and_device() -> (Platform, Device) {
+    // Iterate all platforms
+    for platform in Platform::list() {
+        // Pick first GPU, fallback to CPU
+        if let Ok(devices) = Device::list(platform, Some(DeviceType::GPU)) {
+            if !devices.is_empty() {
+                // Return platform + GPU device
+                let device = devices.into_iter().max_by_key(|d| match d.info(DeviceInfo::MaxComputeUnits).unwrap() {
+                    ocl::enums::DeviceInfoResult::MaxComputeUnits(units) => units,
+                    _ => 0,
+                }).unwrap();
+                return (platform, device);
             }
-        }).unwrap()
-    } else {
-        // Fallback: pick the first available device (CPU)
-        Platform::list().iter()
-            .filter_map(|platform| Device::list_all(*platform).ok())
-            .flatten()
-            .next()
-            .expect("No OpenCL device found")
-    };
-    return device
+        }
+        if let Ok(devices) = Device::list(platform, Some(DeviceType::CPU)) {
+            if !devices.is_empty() {
+                return (platform, devices[0]);
+            }
+        }
+    }
+    panic!("No OpenCL device found");
 }
+
 
 #[pymethods]
 impl Runtime {
     #[new]
     pub fn new() -> PyResult<Self> {
-        let platform = Platform::default();
-        let device = pick_device();
+        let (platform, device) = pick_platform_and_device();
         let context = Context::builder()
             .platform(platform)
             .devices(device.clone())
