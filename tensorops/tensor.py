@@ -808,15 +808,15 @@ class Tensor(ABC):
         assert self.shape[0] == 1, f"Cannot squeeze tensor shaped {self.shape}"
         modify_shape = list(self.shape)
         modify_shape.remove(0)
-        self.shape = tuple(modify_shape)
+        return ShapeOP(self, tuple(modify_shape))
 
-    def unsqueeze(self, dim):
+    def unsqueeze(self, dim=0):
         assert dim >= -1 and dim <= len(self.shape), (
             f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
         )
         modify_shape = list(self.shape)
         modify_shape.insert(dim, 1)
-        self.shape = tuple(modify_shape)
+        return ShapeOP(self, tuple(modify_shape))
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(shape={self.shape}, values={self.values}, requires_grad={self.requires_grad}, weight={self.weight})"
@@ -1822,6 +1822,8 @@ class TensorContext:
     def finalise(self, lim=0, lim_kernels=0):
         from tensorops.backend import AnchoredKernel, Fusor, Kernel
 
+        from .device import TensorOpsDevice
+
         def _unwrap_shapeop_parent(p):
             # ShapeOP is metadata-only; treat it as transparent for dependency tracking.
             while isinstance(p, ShapeOP) or type(p).__name__ == "StopGrad":
@@ -1903,7 +1905,10 @@ class TensorContext:
                 not op_parents
                 or not parents_found_in_kernels
                 or len(parent_kernel_indices) > 1
+                # Disable generic elementwise fusion on Apple/MLX runtime: MLXRuntime doesn't execute custom fused kernels.
+                # Force each op to be emitted as its own predefined kernel on APPLE.
                 or not op.fusable_op
+                or self.device == TensorOpsDevice.APPLE
                 or any(parent in self.completed_kernels for parent in op_parents)
             ):
                 check = [
@@ -1936,7 +1941,10 @@ class TensorContext:
                 self.kernel_number += 1
 
             # 2. fuse Kernel: If all OP parents belong to the *same* single kernel.
-            elif len(parent_kernel_indices) == 1:
+            # Skip fusion on Apple/MLX to ensure MLXRuntime maps predefined kernels correctly.
+            elif (
+                len(parent_kernel_indices) == 1 and self.device != TensorOpsDevice.APPLE
+            ):
                 target_kernel_idx = parent_kernel_indices.pop()
                 if target_kernel_idx not in self.locked_kernels:
                     self.kernels[target_kernel_idx].append(op)
@@ -2321,4 +2329,5 @@ class TensorContext:
             # order of kernels returned from rt is the same as the order given to rt
             self.distribute_results(res, lim_kernels)
         finally:
+            self._exec_lim_kernels = 0
             self._exec_lim_kernels = 0
