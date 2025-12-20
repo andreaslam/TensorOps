@@ -28,7 +28,6 @@ class Tensor(ABC):
         grad_tensor: bool = False,
         device=None,
     ) -> None:
-        # Import here to avoid circular dependency
         from .device import TensorOpsDevice
 
         self.weight = weight
@@ -990,7 +989,7 @@ class Tensor(ABC):
                 pass
 
         # Build minimal temporary context: collect upstream ops and execute
-        tmp_ctx = TensorContext()
+        tmp_ctx = TensorContext(device=self.device)
         visited_ops = set()
         visited_leaves = set()
 
