@@ -13,8 +13,8 @@ import tensorops_backend
 from tensorops import rt
 
 # TODO
-# impl nn essentials, eg softplus, argmax
-# docstrings/
+# impl nn essentials, eg softplus, sigmoid, argmax
+# docstrings
 
 
 class Tensor(ABC):
@@ -26,14 +26,9 @@ class Tensor(ABC):
         is_op: bool = False,
         weight: bool = False,
         grad_tensor: bool = False,
-        device=None,
     ) -> None:
-        # Import here to avoid circular dependency
-        from .device import TensorOpsDevice
-
         self.weight = weight
         self.grad_tensor = grad_tensor
-        self.device = device or TensorOpsDevice.OPENCL  # Default to OpenCL
         has_value = values is not None
         assert xor(has_value, is_op), (
             f"Must be either a valued Tensor or an OP, got {values}"
@@ -717,64 +712,6 @@ class Tensor(ABC):
     def ramp(self):
         """Ramp (alias for ReLU)."""
         return self.relu()
-
-    def softplus(self):
-        """Softplus activation: log(1 + exp(x))."""
-        return (self.exp() + Tensor(1.0, requires_grad=False, device=self.device)).log()
-
-    def argmax(self, axis: Optional[int] = None, keepdims: bool = False):
-        """Argmax along axis. Returns Python int when axis is None; otherwise a Tensor of indices."""
-        data = self.flat if self.flat else self.values
-        if not data:
-            raise ValueError("Cannot compute argmax of empty tensor")
-
-    def to(self, device):
-        """Transfer tensor to a different device.
-
-        Currently a no-op for single-device execution.
-        In multi-device setups, this would trigger data movement.
-        """
-        self.device = device
-        return self
-
-        if axis is None:
-            # Global argmax index
-            if isinstance(data, (bytearray, memoryview, bytes)):
-                mv = self._flat
-                if mv is None:
-                    mv = memoryview(data)
-                    mv = mv.cast("f") if mv.format != "f" else mv
-                max_idx = max(range(len(mv)), key=lambda i: mv[i])
-                return int(max_idx)
-            else:
-                max_idx = max(range(len(data)), key=lambda i: data[i])
-                return int(max_idx)
-
-        shape = self.shape
-        if shape is None:
-            raise ValueError("Argmax requires known shape")
-
-        import numpy as np
-
-        if isinstance(data, (bytearray, memoryview, bytes)):
-            mv = self._flat
-            if mv is None:
-                mv = memoryview(data)
-                mv = mv.cast("f") if mv.format != "f" else mv
-            arr = np.frombuffer(cast(memoryview, mv), dtype=np.float32).reshape(shape)
-        else:
-            arr = np.asarray(data, dtype=np.float32).reshape(shape)
-
-        idx = np.argmax(arr, axis=axis)
-        if keepdims:
-            idx = np.expand_dims(idx, axis=axis)
-        idx_list = idx.tolist()
-        out = Tensor(idx_list, requires_grad=False)
-        try:
-            out.shape = tuple(idx.shape)
-        except Exception:
-            out.shape = None
-        return out
 
     def seed_grad(self, seed: int) -> None:
         # Seed gradients without forcing value materialisation.
@@ -1647,12 +1584,9 @@ class TensorContext:
 
     current_context = None
 
-    def __init__(self, device=None) -> None:
-        from .device import TensorOpsDevice
-
+    def __init__(self) -> None:
         self.ops = []
         self.operands = []
-        self.device = device or TensorOpsDevice.OPENCL  # Default to OpenCL
 
         self.kernel_lookup = {}  # maps op object to index of the kernel it belongs to
         self.kernel_dependencies = {}
@@ -2303,8 +2237,6 @@ class TensorContext:
                     op._pending_ctx = self
 
     def execute_ops(self, lim=0, lim_kernels=0):
-        from . import get_runtime_for_device
-
         self.rewrite()
         # Let backend.convert_kernel know which kernel IDs will be executed in
         # this batch so it can avoid creating LogicalInputSource deps to kernels
@@ -2315,9 +2247,7 @@ class TensorContext:
             valid_kernels = [
                 k for k in self.kernels_objs[lim_kernels:] if k is not None
             ]
-            # Select runtime based on context device
-            runtime = get_runtime_for_device(self.device)
-            res = runtime.execute_graph(valid_kernels)
+            res = rt.execute_graph(valid_kernels)
             # order of kernels returned from rt is the same as the order given to rt
             self.distribute_results(res, lim_kernels)
         finally:
