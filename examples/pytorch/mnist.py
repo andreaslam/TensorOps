@@ -132,7 +132,7 @@ if __name__ == "__main__":
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     loss_fn = torch.nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=2e-4)
+    optimiser = optim.AdamW(model.parameters(), lr=2e-4)
 
     dataset_size = len(dataloader.dataset)
 
@@ -145,9 +145,9 @@ if __name__ == "__main__":
 
             loss = loss_fn(y_batch_pred, y_batch)
 
-            optimizer.zero_grad()
+            optimiser.zero_grad()
             loss.backward()
-            optimizer.step()
+            optimiser.step()
 
             if id_batch % 250 == 0:
                 loss_value = loss.item()

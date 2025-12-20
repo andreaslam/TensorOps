@@ -83,11 +83,11 @@ def visualise_graph(
     initial_nodes, save_img=True, img_path="graph.png", display=False
 ) -> None:
     """
-    Visualizes an operator graph starting from a list of final (output) nodes.
+    Visualises an operator graph starting from a list of final (output) nodes.
 
     Args:
     -----
-    initial_nodes (Union[list[Tensor], Tensor]): A list of Tensor/OP objects that are the final nodes of the graph to visualize. The graph is built by traversing backwards.
+    initial_nodes (Union[list[Tensor], Tensor]): A list of Tensor/OP objects that are the final nodes of the graph to visualise. The graph is built by traversing backwards.
     save_img (bool): Whether to save the graph image to a file.
     img_path (str): Path to save the image.
     display (bool): Whether to display the graph using matplotlib.

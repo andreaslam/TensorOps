@@ -1,6 +1,8 @@
+import hashlib
 import re
-import uuid
 from enum import Enum
+from functools import reduce
+from operator import mul
 from typing import Dict, List, Tuple, Union
 
 import tensorops_backend
@@ -72,6 +74,7 @@ class PredefinedKernel(Enum):
     VecSum = tensorops_backend.PredefinedKernel.VecSum
     VecMax = tensorops_backend.PredefinedKernel.VecMax
     VecMin = tensorops_backend.PredefinedKernel.VecMin
+    MatMul = tensorops_backend.PredefinedKernel.MatMul
 
 
 def prepare_kernel_snippets():
@@ -145,12 +148,12 @@ class Kernel:
     def __init__(
         self, op_list: List[OP], custom_src_str: Union[str, None], kernel_id_val: int
     ):
-        self.op: List[
-            OP
-        ] = op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
-        self.src: Union[
-            str, None
-        ] = custom_src_str  # Custom source from Fusor, or None for predefined
+        self.op: List[OP] = (
+            op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
+        )
+        self.src: Union[str, None] = (
+            custom_src_str  # Custom source from Fusor, or None for predefined
+        )
 
         # self.deps is not directly used for KernelTensorOps creation anymore in the new way
         # self.inputs (direct_initial_inputs) is used for direct_inputs field
@@ -160,17 +163,134 @@ class Kernel:
         # This lambda will be called from TensorContext.finalise
 
     def convert_kernel(
-        self, fusor_kernel_name_if_custom: Union[str, None]
+        self,
+        fusor_kernel_name_if_custom: Union[str, None],
+        ctx: "TensorContext",
     ) -> tensorops_backend.KernelTensorOps:
         if type(self.op[0]).__name__ in ("ShapeOP",):
             return None
+
+        if type(self.op[0]).__name__ == "PermuteOP":
+            permute_op = self.op[0]
+            parent = permute_op.tensor1
+            dims = permute_op.dims
+
+            src_shape = parent.shape
+            tgt_shape = permute_op.shape
+
+            def _strides(shape):
+                strides = [1] * len(shape)
+                stride = 1
+                for i in range(len(shape) - 1, -1, -1):
+                    strides[i] = stride
+                    stride *= int(shape[i])
+                return strides
+
+            parent_strides = _strides(src_shape)
+            # Permute parent strides to match target order
+            src_strides = [parent_strides[d] for d in dims]
+
+            # Use tgt_shape as src_shape to avoid broadcast logic in kernel
+            kernel_src_shape = tgt_shape
+
+            tgt_strides = _strides(tgt_shape)
+            tgt_size = reduce(mul, tgt_shape, 1)
+
+            rank = len(tgt_shape)
+            kernel_name = f"VecPermute_r{rank}"
+            template = tensorops_backend.get_kernel_source_by_name("VecExpandTemplate")
+
+            custom_src_for_rust = re.sub(
+                r"#define\s+RANK\s+\d+",
+                f"#define RANK {rank}",
+                template,
+                count=1,
+            )
+            custom_src_for_rust = re.sub(
+                r"__kernel\s+void\s+VecExpandTemplate",
+                f"__kernel void {kernel_name}",
+                custom_src_for_rust,
+                count=1,
+            )
+
+            kernel_type_obj = tensorops_backend.KernelType.custom(kernel_name)
+
+            py_inputs = []
+
+            # Parent tensor logic
+            actual_parent = parent
+            while type(actual_parent).__name__ in ("ShapeOP", "StopGrad"):
+                actual_parent = getattr(actual_parent, "tensor1", actual_parent)
+
+            source_kernel_id = ctx.kernel_lookup.get(actual_parent)
+            exec_lim_kernels = getattr(ctx, "_exec_lim_kernels", 0)
+
+            if (
+                source_kernel_id is not None
+                and source_kernel_id >= exec_lim_kernels
+                and source_kernel_id != self.kernel_id
+            ):
+                source_output_idx = None
+                output_index_maps = getattr(ctx, "_kernel_output_index", None)
+                if output_index_maps is not None and source_kernel_id < len(
+                    output_index_maps
+                ):
+                    source_output_idx = output_index_maps[source_kernel_id].get(
+                        actual_parent
+                    )
+                if source_output_idx is None:
+                    source_kernel_op_list = ctx.kernels[source_kernel_id]
+                    try:
+                        source_output_idx = source_kernel_op_list.index(actual_parent)
+                    except ValueError:
+                        raise Exception("PermuteOP parent not found")
+                py_inputs.append(
+                    tensorops_backend.LogicalInputSource(
+                        source_kernel_id, source_output_idx
+                    )
+                )
+            elif (
+                getattr(actual_parent, "_values", None) is not None
+                or getattr(actual_parent, "_flat", None) is not None
+            ):
+                host_flat = getattr(actual_parent, "_flat", None)
+                host_values = getattr(actual_parent, "_values", None)
+                py_inputs.append(
+                    tensorops_backend.DirectInput(
+                        host_flat if host_flat is not None else host_values
+                    )
+                )
+
+            # Metadata buffers
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in kernel_src_shape])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in src_strides])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in tgt_shape])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([float(x) for x in tgt_strides])
+            )
+
+            return tensorops_backend.KernelTensorOps(
+                kernel_type=kernel_type_obj,
+                kernel_id=self.kernel_id,
+                num_output_bufs=1,
+                custom_kernel_src=custom_src_for_rust,
+                inputs=py_inputs,
+                scalar_inputs=None,
+                work_size_override=int(tgt_size),
+            )
 
         if type(self.op[0]).__name__ == "ExpandOP":
             expand_op = self.op[0]
             parent = expand_op.tensor1
 
             def _describe_tensor(t) -> str:
-                # Avoid calling __repr__ / .values (can materialize huge buffers)
+                # Avoid calling __repr__ / .values (can materialise huge buffers)
                 try:
                     shape = getattr(t, "shape", None)
                 except Exception:
@@ -203,8 +323,8 @@ class Kernel:
             tgt_strides = _strides(tgt_shape)
             tgt_size = reduce(mul, tgt_shape, 1)
 
-            kernel_name = f"VecExpand_{self.kernel_id}"
             rank = len(tgt_shape)
+            kernel_name = f"VecExpand_r{rank}"
             template = tensorops_backend.get_kernel_source_by_name("VecExpandTemplate")
 
             custom_src_for_rust = re.sub(
@@ -227,15 +347,11 @@ class Kernel:
             # Parent tensor: device dependency (LogicalInputSource) or host (DirectInput)
             # Prefer LogicalInputSource when the parent is produced by a kernel in this graph.
             actual_parent = parent
-            while type(actual_parent).__name__ == "ShapeOP":
+            while type(actual_parent).__name__ in ("ShapeOP", "StopGrad"):
                 actual_parent = getattr(actual_parent, "tensor1", actual_parent)
 
-            source_kernel_id = TensorContext.current_context.kernel_lookup.get(
-                actual_parent
-            )
-            exec_lim_kernels = getattr(
-                TensorContext.current_context, "_exec_lim_kernels", 0
-            )
+            source_kernel_id = ctx.kernel_lookup.get(actual_parent)
+            exec_lim_kernels = getattr(ctx, "_exec_lim_kernels", 0)
             # Skip internal dependencies within the same fused kernel (not applicable for ExpandOP)
             # Create LogicalInputSource for external kernel dependencies
             if (
@@ -243,7 +359,6 @@ class Kernel:
                 and source_kernel_id >= exec_lim_kernels
                 and source_kernel_id != self.kernel_id
             ):
-                ctx = TensorContext.current_context
                 source_output_idx = None
                 output_index_maps = getattr(ctx, "_kernel_output_index", None)
                 if output_index_maps is not None and source_kernel_id < len(
@@ -303,7 +418,97 @@ class Kernel:
                 work_size_override=int(tgt_size),
             )
 
+        if type(self.op[0]).__name__ == "MatMul":
+            matmul_op = self.op[0]
+            # Assume parents are [A, B]
+            A = matmul_op.parents[0]
+            B = matmul_op.parents[1]
+
+            shape_a = A.shape
+            shape_b = B.shape
+
+            M = shape_a[-2]
+            K = shape_a[-1]
+            N = shape_b[-1]
+
+            # Output size
+            tgt_shape = list(shape_a[:-2]) + [M, N]
+            tgt_size = reduce(mul, tgt_shape, 1)
+
+            kernel_type_obj = tensorops_backend.KernelType.predefined(
+                tensorops_backend.PredefinedKernel.MatMul
+            )
+
+            py_inputs = []
+
+            # Add A and B as inputs
+            for parent in [A, B]:
+                actual_parent = parent
+                while type(actual_parent).__name__ in ("ShapeOP", "StopGrad"):
+                    actual_parent = getattr(actual_parent, "tensor1", actual_parent)
+
+                source_kernel_id = ctx.kernel_lookup.get(actual_parent)
+                exec_lim_kernels = getattr(ctx, "_exec_lim_kernels", 0)
+
+                if (
+                    source_kernel_id is not None
+                    and source_kernel_id >= exec_lim_kernels
+                    and source_kernel_id != self.kernel_id
+                ):
+                    source_output_idx = None
+                    output_index_maps = getattr(ctx, "_kernel_output_index", None)
+                    if output_index_maps is not None and source_kernel_id < len(
+                        output_index_maps
+                    ):
+                        source_output_idx = output_index_maps[source_kernel_id].get(
+                            actual_parent
+                        )
+                    if source_output_idx is None:
+                        source_kernel_op_list = ctx.kernels[source_kernel_id]
+                        try:
+                            source_output_idx = source_kernel_op_list.index(
+                                actual_parent
+                            )
+                        except ValueError:
+                            raise Exception(
+                                "MatMul parent not found in producing kernel"
+                            )
+                    py_inputs.append(
+                        tensorops_backend.LogicalInputSource(
+                            source_kernel_id, source_output_idx
+                        )
+                    )
+                elif (
+                    getattr(actual_parent, "_values", None) is not None
+                    or getattr(actual_parent, "_flat", None) is not None
+                ):
+                    host_flat = getattr(actual_parent, "_flat", None)
+                    host_values = getattr(actual_parent, "_values", None)
+                    py_inputs.append(
+                        tensorops_backend.DirectInput(
+                            host_flat if host_flat is not None else host_values
+                        )
+                    )
+                else:
+                    raise Exception(f"MatMul input {actual_parent} not found")
+
+            # Add M, N, K as scalar inputs (DirectInput buffers of size 1)
+            py_inputs.append(tensorops_backend.DirectInput([float(M)]))
+            py_inputs.append(tensorops_backend.DirectInput([float(N)]))
+            py_inputs.append(tensorops_backend.DirectInput([float(K)]))
+
+            return tensorops_backend.KernelTensorOps(
+                kernel_type=kernel_type_obj,
+                kernel_id=self.kernel_id,
+                num_output_bufs=1,
+                custom_kernel_src=None,  # Predefined
+                inputs=py_inputs,
+                scalar_inputs=None,
+                work_size_override=int(tgt_size),
+            )
+
         is_predefined = len(self.op) == 1
+
         kernel_type_obj = (
             tensorops_backend.KernelType.predefined(op_map[type(self.op[0])].value)
             if is_predefined
@@ -317,66 +522,79 @@ class Kernel:
         scalars = None
         input_tensors_for_kernel_object = []
 
+        # Optional scalar inputs attached to the KernelTensorOps (used for simple predefined ops)
+        scalar_values = None
+        # Reduce-op metadata to be passed as DirectInput scalars (pre, axis_len, post)
+        reduce_scalar_direct_inputs: List[float] | None = None
+        reduce_work_size: int | None = None
+
         if is_predefined:
-            if scalars := self.op[0].scalar_operands:
-                if type(self.op[0]).__name__ == "GenericLog":
-                    assert (
-                        len(self.op[0].parents) == 2
-                    ), "GenericLog expects two parents (base, input)"
+            op_name = type(self.op[0]).__name__
+            # Special handling for reductions: Sum/Max/Min require (pre, axis_len, post)
+            if op_name in ("Sum", "Max", "Min"):
+                # Data tensor is the single parent
+                input_tensors_for_kernel_object.append(self.op[0].parents[0])
+                pre = float(getattr(self.op[0], "pre_axis"))
+                axis_len = float(getattr(self.op[0], "axis_len"))
+                post = float(getattr(self.op[0], "post_axis"))
+                reduce_scalar_direct_inputs = [pre, axis_len, post]
+                reduce_work_size = int(pre * post)
+            elif scalars := self.op[0].scalar_operands:
+                # Generic handling for predefined ops with scalar operands (e.g., GenericLog, LeakyReLU)
+                if op_name == "GenericLog":
+                    assert len(self.op[0].parents) == 2, (
+                        "GenericLog expects two parents (base, input)"
+                    )
                 for scalar in scalars:
                     assert len(scalar.values) == 1, "Scalar must be a single value"
-                input_tensors = set(self.op[0].parents).difference(set(scalars))
-                for input_tensor in input_tensors:
-                    input_tensors_for_kernel_object.append(input_tensor)
-                input_tensors_for_kernel_object.extend(scalars)
+
+                scalar_values = []
+                for parent in self.op[0].parents:
+                    if parent in scalars:
+                        scalar_values.append([float(parent.values[0])])
+                    else:
+                        input_tensors_for_kernel_object.append(parent)
             else:
                 # For other predefined ops, include all parents
                 input_tensors_for_kernel_object.extend(self.op[0].parents)
         else:
             # Fused kernel handling: collect external inputs, unwrapping ShapeOPs
             seen_internal_op_ids = {id(op_in_fuse) for op_in_fuse in self.op}
-            temp_external_inputs_map = {}
+            seen_external_ids = set()
+
             for op_in_fuse in self.op:
                 for parent_tensor_obj in op_in_fuse.parents:
-                    # Unwrap ShapeOP to get the actual producer
+                    # Unwrap ShapeOP/StopGrad to get the actual producer
                     actual_parent = parent_tensor_obj
-                    while type(actual_parent).__name__ == "ShapeOP":
+                    while type(actual_parent).__name__ in ("ShapeOP", "StopGrad"):
                         actual_parent = getattr(actual_parent, "tensor1", actual_parent)
                     # Check if the actual producer is internal to this fused kernel
                     if id(actual_parent) not in seen_internal_op_ids:
-                        if id(parent_tensor_obj) not in temp_external_inputs_map:
-                            temp_external_inputs_map[
-                                id(parent_tensor_obj)
-                            ] = parent_tensor_obj
-            sorted_external_input_items = sorted(temp_external_inputs_map.items())
-            input_tensors_for_kernel_object.extend(
-                [tensor for _, tensor in sorted_external_input_items]
-            )
+                        pid = id(parent_tensor_obj)
+                        if pid not in seen_external_ids:
+                            seen_external_ids.add(pid)
+                            input_tensors_for_kernel_object.append(parent_tensor_obj)
+
+        output_index_maps = getattr(ctx, "_kernel_output_index", None)
+        exec_lim_kernels = getattr(ctx, "_exec_lim_kernels", 0)
 
         for input_tensor in input_tensors_for_kernel_object:
             # Prefer LogicalInputSource when possible, even if the tensor currently
             # has `.values` populated (to avoid copying large buffers back into Rust).
             actual_op_for_lookup = input_tensor
-            while type(actual_op_for_lookup).__name__ == "ShapeOP":
+            while type(actual_op_for_lookup).__name__ in ("ShapeOP", "StopGrad"):
                 actual_op_for_lookup = getattr(
                     actual_op_for_lookup, "tensor1", actual_op_for_lookup
                 )
 
-            source_kernel_id = TensorContext.current_context.kernel_lookup.get(
-                actual_op_for_lookup
-            )
-            exec_lim_kernels = getattr(
-                TensorContext.current_context, "_exec_lim_kernels", 0
-            )
+            source_kernel_id = ctx.kernel_lookup.get(actual_op_for_lookup)
             # Skip internal dependencies within the same fused kernel
             # (these are handled by the fusion code itself, not as kernel inputs)
             if source_kernel_id is not None and source_kernel_id == self.kernel_id:
                 continue
             # Create LogicalInputSource for external kernel dependencies
             if source_kernel_id is not None and source_kernel_id >= exec_lim_kernels:
-                ctx = TensorContext.current_context
                 source_output_idx = None
-                output_index_maps = getattr(ctx, "_kernel_output_index", None)
                 if output_index_maps is not None and source_kernel_id < len(
                     output_index_maps
                 ):
@@ -415,17 +633,38 @@ class Kernel:
                     )
                 )
             else:
-                raise Exception(
-                    f"Logical input {actual_op_for_lookup} (kernel {self.kernel_id}) not found in kernel_lookup and has no host values."
-                )
-        return tensorops_backend.KernelTensorOps(
+                # As a fallback (common in backward passes), force materialization
+                # of the producer's host values and pass them as DirectInput.
+                try:
+                    vals = actual_op_for_lookup.values
+                    py_inputs.append(tensorops_backend.DirectInput(vals))
+                except Exception as e:
+                    raise Exception(
+                        f"Logical input {actual_op_for_lookup} (kernel {self.kernel_id}) not found in kernel_lookup and has no host values; materialization failed: {e}"
+                    )
+        # Attach reduce-op scalar DirectInputs at the end (so resolved_inputs len>=4)
+        if reduce_scalar_direct_inputs is not None:
+            py_inputs.append(
+                tensorops_backend.DirectInput([reduce_scalar_direct_inputs[0]])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([reduce_scalar_direct_inputs[1]])
+            )
+            py_inputs.append(
+                tensorops_backend.DirectInput([reduce_scalar_direct_inputs[2]])
+            )
+
+        res = tensorops_backend.KernelTensorOps(
             kernel_type=kernel_type_obj,
             kernel_id=self.kernel_id,
             num_output_bufs=len(self.op),
             custom_kernel_src=custom_src_for_rust,
             inputs=py_inputs if py_inputs else None,
-            scalar_inputs=scalars if scalars else None,
+            scalar_inputs=scalar_values,
+            work_size_override=reduce_work_size,
         )
+
+        return res
 
     def __repr__(self) -> str:
         return f"Kernel(kernel_id={self.kernel_id}, num_ops={len(self.op)}, type={self.op})"
@@ -435,12 +674,15 @@ DEBUG_FUSION_KERNEL_SRC = False
 
 
 class Fusor:
+    # Class-level cache: maps fusion signature -> (kernel_source, kernel_name)
+    _kernel_cache: Dict[str, Tuple[str, str]] = {}
+
     def __init__(self, fuse_ops: List[OP]) -> None:
-        assert all(
-            isinstance(op, OP) for op in fuse_ops
-        ), "All items in fuse_ops must be OP instances"
+        assert all(isinstance(op, OP) for op in fuse_ops), (
+            "All items in fuse_ops must be OP instances"
+        )
         self.fuse_ops = fuse_ops
-        self.kernel_name = "custom_fused_" + uuid.uuid4().hex[:10]
+        self.kernel_name: str | None = None
         self.kernel_instructions: str | None = None
 
     def build_kernel(self) -> Tuple[str, str]:
@@ -452,7 +694,21 @@ class Fusor:
         (so later ops reuse registers instead of re-reading from global memory).
         """
         if self.kernel_instructions:
+            assert self.kernel_name is not None
             return self.kernel_instructions, self.kernel_name
+
+        # Generate a stable signature for this fusion pattern to check cache.
+        # Use op types and parent count to identify the fusion structure.
+        fusion_signature = "|".join(
+            f"{type(op).__name__}:{len(op.parents)}" for op in self.fuse_ops
+        )
+
+        # Check class-level Python cache first (fastest)
+        if fusion_signature in Fusor._kernel_cache:
+            cached_src, cached_name = Fusor._kernel_cache[fusion_signature]
+            self.kernel_instructions = cached_src
+            self.kernel_name = cached_name
+            return cached_src, cached_name
 
         op_output_buffer_map: Dict[int, str] = {
             id(op): f"output_buf_{i}" for i, op in enumerate(self.fuse_ops)
@@ -461,24 +717,26 @@ class Fusor:
         # External inputs are any parent tensors not produced inside this fused kernel.
         # Keep the same ordering strategy as Kernel.convert_kernel (sorted by id).
         # Unwrap ShapeOPs to check if the underlying producer is internal.
-        external_input_ids: List[int] = []
+        # Determine external inputs in a stable order.
+        # Using insertion order (first-seen in graph traversal) avoids depending on
+        # Python object ids, which vary between runs and destroy cache hit rates.
+        external_inputs: List[OP] = []
         external_seen: set[int] = set()
         for op in self.fuse_ops:
             for parent in op.parents:
-                pid = id(parent)
-                # Unwrap ShapeOP to check if the actual producer is internal
+                # Unwrap ShapeOP/StopGrad to check if the actual producer is internal
                 actual_parent = parent
-                while type(actual_parent).__name__ == "ShapeOP":
+                while type(actual_parent).__name__ in ("ShapeOP", "StopGrad"):
                     actual_parent = getattr(actual_parent, "tensor1", actual_parent)
                 if id(actual_parent) in op_output_buffer_map:
                     continue
+                pid = id(parent)
                 if pid not in external_seen:
                     external_seen.add(pid)
-                    external_input_ids.append(pid)
-        external_input_ids.sort()
+                    external_inputs.append(parent)
 
         input_vars_map: Dict[int, str] = {
-            pid: f"v_in_{i}" for i, pid in enumerate(external_input_ids)
+            id(p): f"v_in_{i}" for i, p in enumerate(external_inputs)
         }
 
         op_temp_var_map: Dict[int, str] = {}
@@ -521,13 +779,18 @@ class Fusor:
                 if ph not in placeholders:
                     placeholders.append(ph)
 
+            # Special handling for GenericLog: A[gid] should map to the second parent (input), not the first (base)
+            current_parent_exprs = parent_exprs
+            if isinstance(op_instance, GenericLog):
+                current_parent_exprs = parent_exprs[1:]
+
             for idx, ph in enumerate(placeholders):
-                if idx >= len(parent_exprs):
+                if idx >= len(current_parent_exprs):
                     raise ValueError(
                         f"Not enough inputs for placeholders in snippet for {op_type.__name__}"
                     )
                 expr = re.sub(
-                    r"\b" + re.escape(ph) + r"\[gid\]", parent_exprs[idx], expr
+                    r"\b" + re.escape(ph) + r"\[gid\]", current_parent_exprs[idx], expr
                 )
 
             # Some unary snippets use 'val' rather than A[gid].
@@ -560,6 +823,41 @@ class Fusor:
                     alpha_expr = f"{input_vars_map[alpha_id]}[0]"
                 expr = re.sub(r"\balpha\b", alpha_expr, expr)
 
+            # Pow fusion special-case: handle scalar broadcasting for base/exponent
+            # Build explicit pow(base_expr, exp_expr) using [0] for scalar inputs and [gid] otherwise.
+            if op_type.__name__ == "Pow":
+                if len(op_instance.parents) != 2:
+                    raise ValueError("Pow expects two parents (base, exponent)")
+
+                def _parent_expr(parent_op):
+                    # Unwrap ShapeOP
+                    actual = parent_op
+                    while type(actual).__name__ in ("ShapeOP", "StopGrad"):
+                        actual = getattr(actual, "tensor1", actual)
+                    actual_id = id(actual)
+                    # Internal producer -> temp or output_buf[gid]
+                    if actual_id in op_output_buffer_map:
+                        tmp = op_temp_var_map.get(actual_id)
+                        return (
+                            tmp
+                            if tmp is not None
+                            else f"{op_output_buffer_map[actual_id]}[gid]",
+                            False,
+                        )
+                    # External input -> v_in_n[idx]
+                    vid = id(parent_op)
+                    # Decide scalar vs vector by Python-side length
+                    try:
+                        is_scalar = len(parent_op) == 1
+                    except Exception:
+                        is_scalar = False
+                    idx = "[0]" if is_scalar else "[gid]"
+                    return f"{input_vars_map[vid]}{idx}", is_scalar
+
+                base_expr, _ = _parent_expr(op_instance.parents[0])
+                exp_expr, _ = _parent_expr(op_instance.parents[1])
+                expr = f"pow({base_expr}, {exp_expr})"
+
             out_buf = op_output_buffer_map[id(op_instance)]
             temp_name = f"t{i}"
             fused_body.append(f"    float {temp_name} = {expr};")
@@ -567,20 +865,37 @@ class Fusor:
             op_temp_var_map[id(op_instance)] = temp_name
 
         # Kernel signature: external input buffers, then one output buffer per op.
-        kernel_declaration = f"__kernel void {self.kernel_name}(\n"
+        kernel_declaration = "__kernel void KERNEL_NAME(\n"
         kernel_args: List[str] = []
-        for pid in external_input_ids:
+        for p in external_inputs:
+            pid = id(p)
             kernel_args.append(f"    __global const float* {input_vars_map[pid]}")
         for op in self.fuse_ops:
             kernel_args.append(f"    __global float* {op_output_buffer_map[id(op)]}")
 
-        self.kernel_instructions = (
+        kernel_src_with_placeholder = (
             kernel_declaration
             + ",\n".join(kernel_args)
             + "\n) {\n    int gid = get_global_id(0);\n"
             + "\n".join(fused_body)
             + "\n}\n"
         )
-        if DEBUG_FUSION_KERNEL_SRC:
-            print(self.kernel_instructions)
+
+        # Deterministic kernel name for stable Rust program_cache hits.
+        # Hash the kernel source with a placeholder name so the name doesn't
+        # self-influence the hash.
+        h = hashlib.sha1(kernel_src_with_placeholder.encode("utf-8")).hexdigest()[:16]
+        self.kernel_name = f"custom_fused_{h}"
+        self.kernel_instructions = kernel_src_with_placeholder.replace(
+            "KERNEL_NAME", self.kernel_name
+        )
+
+        # Cache the result for future fusion of the same pattern
+        Fusor._kernel_cache[fusion_signature] = (
+            self.kernel_instructions,
+            self.kernel_name,
+        )
+
+        # if DEBUG_FUSION_KERNEL_SRC:
+        print(self.kernel_instructions)
         return self.kernel_instructions, self.kernel_name

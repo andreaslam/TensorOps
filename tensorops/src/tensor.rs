@@ -47,25 +47,26 @@ pub fn tensor_from_list<'py>(
         )
     };
 
-    let list = PyList::new(py, &flat)?.into_py(py);
+    let byte_array = PyByteArray::new(py, byte_slice);
 
-    Ok((list, shape))
+    Ok((byte_array.into_py(py), shape))
 }
 
 #[pyfunction]
-pub fn tensor_max(
+pub fn tensor_max<'py>(
+    py: Python<'py>,
     data: Vec<f32>,
     shape: Vec<usize>,
     axis: Option<isize>,
-) -> PyResult<(Vec<f32>, Vec<usize>)> {
-    match axis {
+) -> PyResult<(PyObject, Vec<usize>)> {
+    let (result, out_shape) = match axis {
         None => {
             // Global max
             let max_val = data.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            Ok((vec![max_val], vec![]))
+            (vec![max_val], vec![])
         }
         Some(ax) => {
-            // Normalize axis to positive index
+            // Normalise axis to positive index
             let ndim = shape.len() as isize;
             let axis_idx = if ax < 0 {
                 (ndim + ax) as usize
@@ -81,26 +82,36 @@ pub fn tensor_max(
                 )));
             }
 
-            reduce_along_axis(&data, &shape, axis_idx, f32::NEG_INFINITY, f32::max)
+            reduce_along_axis(&data, &shape, axis_idx, f32::NEG_INFINITY, f32::max)?
         }
-    }
+    };
+
+    let byte_slice = unsafe {
+        std::slice::from_raw_parts(
+            result.as_ptr() as *const u8,
+            result.len() * std::mem::size_of::<f32>(),
+        )
+    };
+    let byte_array = PyByteArray::new(py, byte_slice);
+    Ok((byte_array.into_py(py), out_shape))
 }
 
 /// Compute min along an axis or across entire tensor
 #[pyfunction]
-pub fn tensor_min(
+pub fn tensor_min<'py>(
+    py: Python<'py>,
     data: Vec<f32>,
     shape: Vec<usize>,
     axis: Option<isize>,
-) -> PyResult<(Vec<f32>, Vec<usize>)> {
-    match axis {
+) -> PyResult<(PyObject, Vec<usize>)> {
+    let (result, out_shape) = match axis {
         None => {
             // Global min
             let min_val = data.iter().copied().fold(f32::INFINITY, f32::min);
-            Ok((vec![min_val], vec![]))
+            (vec![min_val], vec![])
         }
         Some(ax) => {
-            // Normalize axis to positive index
+            // Normalise axis to positive index
             let ndim = shape.len() as isize;
             let axis_idx = if ax < 0 {
                 (ndim + ax) as usize
@@ -116,17 +127,27 @@ pub fn tensor_min(
                 )));
             }
 
-            reduce_along_axis(&data, &shape, axis_idx, f32::INFINITY, f32::min)
+            reduce_along_axis(&data, &shape, axis_idx, f32::INFINITY, f32::min)?
         }
-    }
+    };
+
+    let byte_slice = unsafe {
+        std::slice::from_raw_parts(
+            result.as_ptr() as *const u8,
+            result.len() * std::mem::size_of::<f32>(),
+        )
+    };
+    let byte_array = PyByteArray::new(py, byte_slice);
+    Ok((byte_array.into_py(py), out_shape))
 }
 
 #[pyfunction]
-pub fn tensor_expand(
+pub fn tensor_expand<'py>(
+    py: Python<'py>,
     data: Vec<f32>,
     src_shape: Vec<usize>,
     tgt_shape: Vec<usize>,
-) -> PyResult<Vec<f32>> {
+) -> PyResult<PyObject> {
     if src_shape.len() != tgt_shape.len() {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "Expand requires same number of dimensions, got src_shape={:?}, tgt_shape={:?}",
@@ -135,7 +156,14 @@ pub fn tensor_expand(
     }
     let ndim = src_shape.len();
     if ndim == 0 {
-        return Ok(data);
+        let byte_slice = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        let byte_array = PyByteArray::new(py, byte_slice);
+        return Ok(byte_array.into_py(py));
     }
 
     for i in 0..ndim {
@@ -159,7 +187,14 @@ pub fn tensor_expand(
         )));
     }
     if src_shape == tgt_shape {
-        return Ok(data);
+        let byte_slice = unsafe {
+            std::slice::from_raw_parts(
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        let byte_array = PyByteArray::new(py, byte_slice);
+        return Ok(byte_array.into_py(py));
     }
 
     let tgt_size: usize = tgt_shape.iter().product();
@@ -185,7 +220,14 @@ pub fn tensor_expand(
         out[out_idx] = data[src_flat_idx];
     }
 
-    Ok(out)
+    let byte_slice = unsafe {
+        std::slice::from_raw_parts(
+            out.as_ptr() as *const u8,
+            out.len() * std::mem::size_of::<f32>(),
+        )
+    };
+    let byte_array = PyByteArray::new(py, byte_slice);
+    Ok(byte_array.into_py(py))
 }
 
 /// Generic reduction along a specific axis

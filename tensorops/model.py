@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import pickle
 import random
 from abc import ABC, abstractmethod
@@ -30,18 +31,23 @@ class Model(ABC):
     input_tensors (tensorops.tensor.Tensor): Inputs for the model.
     """
 
-    def __init__(self, loss_criterion: Loss, seed: int | None = None) -> None:
+    def __init__(
+        self, loss_criterion: Loss, seed: int | None = None, *, batch_size: int = 1
+    ) -> None:
         self.context = TensorContext()
         self.model_layers = []
-        self.targets = []
-        self.weights = []
+        self.targets: Tensor | None = None
+        self.weights: list[Tensor] = []
         self.model_input_layer: Union[Layer, None] = None
         self.model_output_layer: Union[Layer, None] = None
         self.loss = None
         self._prev_layer: Tensor | None = None
         self.seed = seed
+        self.batch_size = int(batch_size)
         with self.context:
             self.loss_criterion = loss_criterion
+            # Placeholder to keep the attribute type-stable; replaced in add_layer().
+            self.targets = Tensor([[0.0]])
 
     @abstractmethod
     def forward(self, model_inputs: Union[Tensor, Tensor]) -> Union[Tensor, Tensor]:
@@ -90,9 +96,14 @@ class Model(ABC):
         if self.model_layers:
             assert (
                 num_input_tensors == self.model_output_layer.num_output_tensors  # type: ignore
-            ), f"Layer shapes invalid! Expected current layer shape to be ({self.model_layers[-1].num_output_tensors}, n) from previous layer shape ({self.model_layers[-1].num_input_tensors}, {self.model_layers[-1].num_output_tensors})"
-        if self._prev_layer is None:  # initialise with empty tensor
-            self._prev_layer = Tensor([0.0] * num_input_tensors)
+            ), (
+                f"Layer shapes invalid! Expected current layer shape to be ({self.model_layers[-1].num_output_tensors}, n) from previous layer shape ({self.model_layers[-1].num_input_tensors}, {self.model_layers[-1].num_output_tensors})"
+            )
+        if self._prev_layer is None:  # initialise with empty batch tensor
+            self._prev_layer = Tensor(
+                [[0.0] * num_input_tensors for _ in range(self.batch_size)],
+                requires_grad=False,
+            )
         new_layer = Layer(
             self.context,
             num_input_tensors,
@@ -107,7 +118,13 @@ class Model(ABC):
         self.model_layers.append(new_layer)
         self.model_output_layer = self.model_layers[-1]
 
-        self.targets = Tensor([0.0] * self.model_output_layer.num_output_tensors)
+        self.targets = Tensor(
+            [
+                [0.0] * self.model_output_layer.num_output_tensors
+                for _ in range(self.batch_size)
+            ],
+            requires_grad=False,
+        )
         self.weights.append(new_layer.output_weights)
         self.weights.append(new_layer.output_bias)
         return new_layer
@@ -185,8 +202,19 @@ class Model(ABC):
     def __len__(self) -> int:
         return len(self.context.ops)
 
-    def __call__(self, input_tensor: Tensor | Tensor) -> Tensor | Tensor:
-        return self.forward(input_tensor)
+    def __call__(
+        self, input_tensor: Tensor | Tensor, *, execute: bool = False
+    ) -> Tensor | Tensor:
+        """Runs the model forward.
+
+        By default this is lazy (it only builds/updates the graph). Pass
+        `execute=True` to also execute the graph submission so the returned
+        output tensor has concrete `.values` immediately.
+        """
+        out = self.forward(input_tensor)
+        if execute:
+            self.context.forward()
+        return out
 
     def __repr__(self) -> str:
         if self.model_layers:
@@ -227,25 +255,37 @@ class Layer:
         self.num_input_tensors = num_input_tensors
         self.num_output_tensors = num_output_tensors
         if layer_input_tensors is not None:
-            self.layer_input_tensors = layer_input_tensors
+            # Must be 2D for matmul. If a 1D placeholder was supplied, wrap it.
+            if (
+                getattr(layer_input_tensors, "shape", None)
+                and len(layer_input_tensors.shape) == 1
+            ):
+                self.layer_input_tensors = Tensor(
+                    [[0.0] * num_input_tensors],
+                    requires_grad=False,
+                )
+            else:
+                self.layer_input_tensors = layer_input_tensors
         else:
-            self.layer_input_tensors = Tensor([0.0] * num_input_tensors)
+            self.layer_input_tensors = Tensor([[0.0] * num_input_tensors])
         self.activation_function = activation_function
         self.seed = seed
         if self.seed:
             random.seed(self.seed)
         if output_weights is not None:
-            assert (
-                len(output_weights) == self.num_output_tensors
-            ), "Length of output_weights must match num_output_tensors."
+            assert len(output_weights) == self.num_output_tensors, (
+                "Length of output_weights must match num_output_tensors."
+            )
             num_weights = self.num_input_tensors * self.num_output_tensors
-            assert (
-                sum(len(x) for x in output_weights) == num_weights
-            ), "Each weight list must match num_input_tensors."
+            assert sum(len(x) for x in output_weights) == num_weights, (
+                "Each weight list must match num_input_tensors."
+            )
         else:
+            # He initialization (uniform)
+            limit = math.sqrt(6 / num_input_tensors)
             output_weights = Tensor(
                 [
-                    random.uniform(-1, 1)
+                    random.uniform(-limit, limit)
                     for _ in range(num_input_tensors * num_output_tensors)
                 ]
             )
@@ -253,22 +293,28 @@ class Layer:
                 (num_input_tensors, num_output_tensors)
             )
         if output_bias is not None:
-            assert (
-                len(output_bias) == self.num_output_tensors
-            ), "Length of output_bias must match num_output_tensors."
-        else:
-            output_bias = Tensor(
-                [random.uniform(-1, 1) for _ in range(self.num_output_tensors)]
+            assert len(output_bias) == self.num_output_tensors, (
+                "Length of output_bias must match num_output_tensors."
             )
+        else:
+            # Bias is stored as (1, out) and expanded to (batch, out) when used.
+            output_bias = Tensor([[0.0 for _ in range(self.num_output_tensors)]])
+        # Mark parameters as weights and ensure gradients are tracked
+        output_weights.weight = True
+        output_weights.requires_grad = True
+        output_bias.weight = True
+        output_bias.requires_grad = True
         self.output_weights = output_weights
         self.output_bias = output_bias
-        input_2d = self.layer_input_tensors.reshape((1, self.num_input_tensors))
-        output_2d = input_2d @ self.output_weights + self.output_bias
-        output_1d = output_2d.reshape((self.num_output_tensors,))
+        # Assume layer_input_tensors is 2D: (batch_size, num_input_tensors)
+        # Output will be (batch_size, num_output_tensors)
+        batch_dim = self.layer_input_tensors.shape[0]
+        bias_expanded = self.output_bias.expand((batch_dim, self.num_output_tensors))
+        output_2d = self.layer_input_tensors @ self.output_weights + bias_expanded
         self.layer_output = (
-            self.activation_function(output_1d)
+            self.activation_function(output_2d)
             if self.activation_function
-            else output_1d
+            else output_2d
         )
 
     def forward(self, forward_inputs: Tensor):
@@ -280,6 +326,12 @@ class Layer:
         Returns:
             Tensor: The list of outputs produced by the neural network layer.
         """
+        # This layer is built for a fixed batch size; enforce shape match.
+        if forward_inputs.shape and self.layer_input_tensors.shape:
+            if forward_inputs.shape != self.layer_input_tensors.shape:
+                raise ValueError(
+                    f"Batch shape mismatch: got {forward_inputs.shape}, expected {self.layer_input_tensors.shape}"
+                )
         self.layer_input_tensors.values = forward_inputs.values
 
     def __repr__(self) -> str:

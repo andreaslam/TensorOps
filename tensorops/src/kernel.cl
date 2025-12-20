@@ -73,22 +73,29 @@ __kernel void VecDiv(__global const float* A,
 }
 
 /*
- * VecPow: Element-wise power operation (C = A ^ B or C = A ^ exponent)
- * Version 1: Element-wise exponent (C[i] = A[i] ^ B[i])
+ * VecPow: Element-wise power operation (C = A ^ B or C = base ^ exponent)
+ * Supports both element-wise and scalar base broadcasting:
+ * - If base buffer has same length as work size: C[i] = base[i] ^ exponent[i]
+ * - If base buffer has length 1: C[i] = base[0] ^ exponent[i] (broadcasting)
  * Inputs:
- * base: __global float* - Vector of bases
- * exponent: __global float* - Vector of exponents
- * Output:
- * C: __global float* - Output vector where C[i] = pow(base[i], exponent[i])
+ * base: __global float* - Vector of bases (length N or 1)
+ * exponent: __global float* - Vector of exponents (length N)
+ * C: __global float* - Output vector
+ * base_len_f: float - Length of base buffer as float (for broadcast detection)
  */
 __kernel void VecPow(__global const float* base,
                      __global const float* exponent,
-                     __global float* C)
+                     __global float* C,
+                     float base_len_f)
 {
     int gid = get_global_id(0);
-
-    // Calculate base[gid] raised to the power of exponent[gid]
-    C[gid] = pow(base[gid], exponent[gid]);
+    int base_len = (int)base_len_f;
+    
+    // Broadcast if base has only one element
+    int base_idx = (base_len == 1) ? 0 : gid;
+    
+    // Calculate base[base_idx] raised to the power of exponent[gid]
+    C[gid] = pow(base[base_idx], exponent[gid]);
 }
 
 /*
@@ -100,11 +107,11 @@ __kernel void VecPow(__global const float* base,
  * B: __global float* - Output vector where B[i] = log_base(A[i])
  */
 __kernel void VecLog(__global const float* A,
-                     __global float* B,
+                     __global float* C,
                      float base)
 {
     int gid = get_global_id(0);
-    B[gid] = log(A[gid]) / log(base);
+    C[gid] = log(A[gid]) / log(base);
 }
 
 /*
@@ -332,5 +339,47 @@ __kernel void VecExpandTemplate(
         src_idx += scol * sstride;
     }
     out[gid] = src[src_idx];
+}
+
+
+/*
+ * MatMul: Batched Matrix Multiplication (C = A @ B)
+ * Inputs:
+ * A: __global float* - Matrix A (Batch x M x K)
+ * B: __global float* - Matrix B (Batch x K x N)
+ * M_buf: __global float* - M dimension (scalar)
+ * N_buf: __global float* - N dimension (scalar)
+ * K_buf: __global float* - K dimension (scalar)
+ * Output:
+ * C: __global float* - Matrix C (Batch x M x N)
+ */
+__kernel void MatMul(__global const float* A,
+                     __global const float* B,
+                     __global const float* M_buf,
+                     __global const float* N_buf,
+                     __global const float* K_buf,
+                     __global float* C)
+{
+    int M = (int)M_buf[0];
+    int N = (int)N_buf[0];
+    int K = (int)K_buf[0];
+
+    int gid = get_global_id(0);
+    
+    int batch_size = M * N;
+    int batch_idx = gid / batch_size;
+    int rem = gid % batch_size;
+    
+    int row = rem / N;
+    int col = rem % N;
+
+    int a_offset = batch_idx * M * K;
+    int b_offset = batch_idx * K * N;
+    
+    float sum = 0.0f;
+    for (int k = 0; k < K; ++k) {
+        sum += A[a_offset + row * K + k] * B[b_offset + k * N + col];
+    }
+    C[gid] = sum;
 }
 

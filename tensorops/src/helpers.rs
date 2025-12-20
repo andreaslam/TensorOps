@@ -21,6 +21,7 @@ const KERNEL_VEC_LEAKY_RELU: &str = "VecLeakyReLU";
 const KERNEL_VEC_SUM: &str = "VecSum";
 const KERNEL_VEC_MAX: &str = "VecMax";
 const KERNEL_VEC_MIN: &str = "VecMin";
+const KERNEL_MAT_MUL: &str = "MatMul";
 
 fn extract_kernel_code(source: &str, kernel_name: &str) -> Option<String> {
     let kernel_sig_pattern = format!("__kernel void {}", kernel_name);
@@ -77,6 +78,7 @@ lazy_static! {
             (PredefinedKernel::VecSum, KERNEL_VEC_SUM),
             (PredefinedKernel::VecMax, KERNEL_VEC_MAX),
             (PredefinedKernel::VecMin, KERNEL_VEC_MIN),
+            (PredefinedKernel::MatMul, KERNEL_MAT_MUL),
         ];
         for (kernel_enum, kernel_name) in kernels_to_extract.iter() {
             if let Some(snippet) = extract_kernel_code(&KERNEL_SRC, kernel_name) {

@@ -20,7 +20,7 @@ git clone https://github.com/andreaslam/TensorOps.git
 At the root of the repository, run:
 
 ```
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### Building the Backend

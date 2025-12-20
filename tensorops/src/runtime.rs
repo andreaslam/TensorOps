@@ -9,7 +9,11 @@ use ocl::{
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::PyByteArray;
+use pyo3::{ffi, AsPyPointer};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 fn ocl_py_err(e: OclError, context: &str) -> PyErr {
     PyRuntimeError::new_err(format!("OpenCL Error [{}]: {}", context, e))
@@ -49,6 +53,16 @@ impl Runtime {
             queue,
             program_cache: HashMap::new(),
         })
+    }
+
+    /// Check if a kernel source is already compiled in the program cache.
+    /// This allows Python to skip kernel generation if the result is already cached.
+    #[pyo3(text_signature = "($self, kernel_sources)")]
+    pub fn has_compiled_kernels(&self, kernel_sources: Vec<String>) -> bool {
+        let mut sources_vec: Vec<&str> = kernel_sources.iter().map(|s| s.as_str()).collect();
+        sources_vec.sort_unstable();
+        let program_src = sources_vec.join("\n\n");
+        self.program_cache.contains_key(&program_src)
     }
 
     #[pyo3(text_signature = "($self, kernels_to_exec_py)")]
@@ -184,10 +198,15 @@ impl Runtime {
                 batch_scalar_args.insert(*kernel_id, scalar_inputs);
             }
 
-            // Stabilize source ordering so cache hits are reliable.
+            // Stabilise source ordering so cache hits are reliable.
             let mut batch_kernel_sources_vec = batch_kernel_sources.into_iter().collect::<Vec<_>>();
             batch_kernel_sources_vec.sort_unstable();
             let program_src = batch_kernel_sources_vec.join("\n\n");
+
+            let debug_cache = std::env::var_os("TENSOROPS_DEBUG_PROGRAM_CACHE").is_some();
+            let mut src_hasher = DefaultHasher::new();
+            program_src.hash(&mut src_hasher);
+            let program_src_hash = src_hasher.finish();
 
             let program = if let Some(p) = self.program_cache.get(&program_src) {
                 p.clone()
@@ -210,6 +229,7 @@ impl Runtime {
                     .get(kernel_id)
                     .cloned()
                     .unwrap_or_else(Vec::new);
+                let scalar_count = scalar_inputs.len();
 
                 if work_size == 0 {
                     device_results_map.insert(*kernel_id, Vec::new());
@@ -241,11 +261,23 @@ impl Runtime {
                 }
 
                 // Then scalar args (VecLog, VecLeakyReLU, VecSum, etc.)
-                for s in scalar_inputs {
-                    builder.arg(s);
+                for s in &scalar_inputs {
+                    builder.arg(*s);
                 }
 
-                let k = builder.build().map_err(|e| ocl_py_err(e, "Kernel Build"))?;
+                let k = match builder.build() {
+                    Ok(k) => k,
+                    Err(e) => {
+                        eprintln!(
+                            "[tensorops_backend] Kernel Build failed for '{}' (buffer args={}, scalar args={}, work_size={})",
+                            name,
+                            args.len(),
+                            scalar_count,
+                            work_size
+                        );
+                        return Err(ocl_py_err(e, "Kernel Build"));
+                    }
+                };
                 unsafe { k.enq().map_err(|e| ocl_py_err(e, "Kernel Enqueue"))? };
             }
 
@@ -298,8 +330,11 @@ impl Runtime {
             let id = k_ref.kernel_id;
             let work = *work_sizes_map.get(&id).unwrap_or(&0);
             if work == 0 {
+                let empty_outputs = (0..k_ref.num_output_bufs)
+                    .map(|_| PyByteArray::new(py, &[]).into_py(py))
+                    .collect();
                 final_results.push(KernelResult {
-                    val: vec![Vec::new(); k_ref.num_output_bufs],
+                    val: empty_outputs,
                     kernel_id: id,
                 });
                 continue;
@@ -311,17 +346,34 @@ impl Runtime {
 
             let mut outputs = Vec::with_capacity(k_ref.num_output_bufs);
             for buf in output_bufs.iter() {
-                let mut host = vec![0.0f32; work];
-                buf.read(&mut host)
-                    .enq()
+                let size_bytes = work * std::mem::size_of::<f32>();
+
+                let py_byte_array = unsafe {
+                    let ptr =
+                        ffi::PyByteArray_FromStringAndSize(std::ptr::null(), size_bytes as isize);
+                    if ptr.is_null() {
+                        return Err(PyErr::fetch(py));
+                    }
+                    Bound::from_owned_ptr(py, ptr).downcast_into::<PyByteArray>()?
+                };
+
+                let buffer_ptr =
+                    unsafe { ffi::PyByteArray_AsString(py_byte_array.as_ptr()) as *mut f32 };
+                let host_slice = unsafe { std::slice::from_raw_parts_mut(buffer_ptr, work) };
+
+                unsafe { buf.read(host_slice).block(false).enq() }
                     .map_err(|e| ocl_py_err(e, &format!("Read Buffer for Kernel {}", id)))?;
-                outputs.push(host);
+
+                outputs.push(py_byte_array.into_py(py));
             }
             final_results.push(KernelResult {
                 val: outputs,
                 kernel_id: id,
             });
         }
+        self.queue
+            .finish()
+            .map_err(|e| ocl_py_err(e, "Final Read Finish"))?;
         Ok(final_results)
     }
 
