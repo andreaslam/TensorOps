@@ -2,7 +2,8 @@ use crate::kernel::{
     DirectInput, KernelResult, KernelTensorOps, KernelType, LogicalInputSource, PredefinedKernel,
     ResolvedInput,
 };
-use ocl::Buffer;
+use ocl::core::DeviceInfo;
+use ocl::{Buffer, DeviceType};
 use ocl::{
     core::QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, Context, Device, Error as OclError,
     Kernel as OclKernel, Platform, Program, Queue,
@@ -28,13 +29,40 @@ pub struct Runtime {
     program_cache: HashMap<String, Program>,
 }
 
+fn pick_device() -> Device{
+    // Collect all GPUs across all platforms
+    let mut gpus: Vec<Device> = Platform::list().iter()
+        .filter_map(|platform| {
+            Device::list(*platform, Some(DeviceType::GPU)).ok()
+        })
+        .flatten()
+        .collect();
+
+    // Pick GPU with maximum compute units
+    let device = if !gpus.is_empty() {
+        gpus.into_iter().max_by_key(|d| {
+            match d.info(DeviceInfo::MaxComputeUnits).unwrap() {
+                ocl::enums::DeviceInfoResult::MaxComputeUnits(units) => units,
+                _ => 0,
+            }
+        }).unwrap()
+    } else {
+        // Fallback: pick the first available device (CPU)
+        Platform::list().iter()
+            .filter_map(|platform| Device::list_all(*platform).ok())
+            .flatten()
+            .next()
+            .expect("No OpenCL device found")
+    };
+    return device
+}
+
 #[pymethods]
 impl Runtime {
     #[new]
     pub fn new() -> PyResult<Self> {
         let platform = Platform::default();
-        let device = Device::first(platform)
-            .map_err(|_| PyRuntimeError::new_err("No OpenCL devices found"))?;
+        let device = pick_device();
         let context = Context::builder()
             .platform(platform)
             .devices(device.clone())
@@ -209,8 +237,24 @@ impl Runtime {
             let program_src_hash = src_hasher.finish();
 
             let program = if let Some(p) = self.program_cache.get(&program_src) {
+                if debug_cache {
+                    eprintln!(
+                        "[tensorops_backend] program_cache hit hash={:016x} sources={} kernels={}",
+                        program_src_hash,
+                        batch_kernel_sources_vec.len(),
+                        current_batch_ids_to_run.len()
+                    );
+                }
                 p.clone()
             } else {
+                if debug_cache {
+                    eprintln!(
+                        "[tensorops_backend] program_cache miss hash={:016x} sources={} kernels={}",
+                        program_src_hash,
+                        batch_kernel_sources_vec.len(),
+                        current_batch_ids_to_run.len()
+                    );
+                }
                 let p = Program::builder()
                     .src(program_src.clone())
                     .devices(self.device.clone())
@@ -229,7 +273,6 @@ impl Runtime {
                     .get(kernel_id)
                     .cloned()
                     .unwrap_or_else(Vec::new);
-                let scalar_count = scalar_inputs.len();
 
                 if work_size == 0 {
                     device_results_map.insert(*kernel_id, Vec::new());
@@ -261,23 +304,11 @@ impl Runtime {
                 }
 
                 // Then scalar args (VecLog, VecLeakyReLU, VecSum, etc.)
-                for s in &scalar_inputs {
-                    builder.arg(*s);
+                for s in scalar_inputs {
+                    builder.arg(s);
                 }
 
-                let k = match builder.build() {
-                    Ok(k) => k,
-                    Err(e) => {
-                        eprintln!(
-                            "[tensorops_backend] Kernel Build failed for '{}' (buffer args={}, scalar args={}, work_size={})",
-                            name,
-                            args.len(),
-                            scalar_count,
-                            work_size
-                        );
-                        return Err(ocl_py_err(e, "Kernel Build"));
-                    }
-                };
+                let k = builder.build().map_err(|e| ocl_py_err(e, "Kernel Build"))?;
                 unsafe { k.enq().map_err(|e| ocl_py_err(e, "Kernel Enqueue"))? };
             }
 
@@ -346,34 +377,25 @@ impl Runtime {
 
             let mut outputs = Vec::with_capacity(k_ref.num_output_bufs);
             for buf in output_bufs.iter() {
-                let size_bytes = work * std::mem::size_of::<f32>();
-
-                let py_byte_array = unsafe {
-                    let ptr =
-                        ffi::PyByteArray_FromStringAndSize(std::ptr::null(), size_bytes as isize);
-                    if ptr.is_null() {
-                        return Err(PyErr::fetch(py));
-                    }
-                    Bound::from_owned_ptr(py, ptr).downcast_into::<PyByteArray>()?
-                };
-
-                let buffer_ptr =
-                    unsafe { ffi::PyByteArray_AsString(py_byte_array.as_ptr()) as *mut f32 };
-                let host_slice = unsafe { std::slice::from_raw_parts_mut(buffer_ptr, work) };
-
-                unsafe { buf.read(host_slice).block(false).enq() }
+                let mut host = vec![0.0f32; work];
+                buf.read(&mut host)
+                    .enq()
                     .map_err(|e| ocl_py_err(e, &format!("Read Buffer for Kernel {}", id)))?;
 
-                outputs.push(py_byte_array.into_py(py));
+                let byte_slice = unsafe {
+                    std::slice::from_raw_parts(
+                        host.as_ptr() as *const u8,
+                        host.len() * std::mem::size_of::<f32>(),
+                    )
+                };
+                let byte_array = PyByteArray::new(py, byte_slice);
+                outputs.push(byte_array.into_py(py));
             }
             final_results.push(KernelResult {
                 val: outputs,
                 kernel_id: id,
             });
         }
-        self.queue
-            .finish()
-            .map_err(|e| ocl_py_err(e, "Final Read Finish"))?;
         Ok(final_results)
     }
 
