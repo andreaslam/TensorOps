@@ -4,7 +4,7 @@ use crate::kernel::{
 };
 use ocl::core::DeviceInfo;
 use ocl::{
-    core::QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, Context, Device, Error as OclError,
+    core::QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, Context, Device, Error as OclError, Event,
     Kernel as OclKernel, Platform, Program, Queue,
 };
 use ocl::{Buffer, DeviceType};
@@ -13,7 +13,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 
 fn ocl_py_err(e: OclError, context: &str) -> PyErr {
     PyRuntimeError::new_err(format!("OpenCL Error [{}]: {}", context, e))
@@ -29,6 +31,10 @@ pub struct Runtime {
     /// Cache of device buffers for stable DirectInput objects.
     /// Keyed by the PyObject pointer address of the DirectInput instance.
     direct_input_buffer_cache: HashMap<usize, Buffer<f32>>,
+    /// Cache directory for precompiled kernels.
+    cache_dir: PathBuf,
+    /// Device identifier for binary cache versioning.
+    device_id: String,
 }
 
 fn pick_platform_and_device() -> (Platform, Device) {
@@ -57,6 +63,24 @@ fn pick_platform_and_device() -> (Platform, Device) {
     panic!("No OpenCL device found");
 }
 
+fn get_cache_dir() -> PathBuf {
+    let cache_dir = if let Ok(home) = std::env::var("TENSOROPS_CACHE_DIR") {
+        PathBuf::from(home)
+    } else {
+        let mut path = std::env::temp_dir();
+        path.push("tensorops_kernel_cache");
+        path
+    };
+    let _ = fs::create_dir_all(&cache_dir);
+    cache_dir
+}
+
+fn compute_source_hash(src: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    src.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
 #[pymethods]
 impl Runtime {
     #[new]
@@ -74,12 +98,19 @@ impl Runtime {
         )
         .map_err(|e| ocl_py_err(e, "Queue Creation"))?;
 
+        let device_name = device.name().unwrap_or_default();
+        let device_vendor = device.vendor().unwrap_or_default();
+        let device_id = format!("{}_{}", device_vendor, device_name).replace(" ", "_");
+        let cache_dir = get_cache_dir();
+
         Ok(Self {
             context,
             device,
             queue,
             program_cache: HashMap::new(),
             direct_input_buffer_cache: HashMap::new(),
+            cache_dir,
+            device_id,
         })
     }
 
@@ -123,6 +154,8 @@ impl Runtime {
         let mut device_results_map: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
         // Work sizes for reading back results at the end.
         let mut work_sizes_map: HashMap<usize, usize> = HashMap::new();
+        // Events for dependency tracking
+        let mut kernel_events: HashMap<usize, Event> = HashMap::new();
 
         let mut runnable_kernel_ids: Vec<usize> = current_kernels
             .iter()
@@ -161,7 +194,6 @@ impl Runtime {
 
             let queue = self.queue.clone();
 
-            let mut batch_kernel_sources = HashSet::new();
             let mut batch_resolved_kernel_data: HashMap<
                 usize,
                 (KernelTensorOps, Vec<ResolvedInput>),
@@ -225,7 +257,6 @@ impl Runtime {
             }
 
             for (kernel_id, (kernel_info, resolved_inputs)) in &batch_resolved_kernel_data {
-                batch_kernel_sources.insert(kernel_info.kernel_src.as_str());
                 let (input_bufs, output_bufs, work_size, scalar_inputs) = kernel_info
                     .prepare_ocl_buffers_from_resolved_inputs_any(
                         &queue,
@@ -242,33 +273,6 @@ impl Runtime {
                 batch_work_sizes.insert(*kernel_id, work_size);
                 batch_scalar_args.insert(*kernel_id, scalar_inputs);
             }
-
-            // Stabilise source ordering so cache hits are reliable.
-            let mut batch_kernel_sources_vec = batch_kernel_sources.into_iter().collect::<Vec<_>>();
-            batch_kernel_sources_vec.sort_unstable();
-            let program_src = batch_kernel_sources_vec.join("\n\n");
-
-            let debug_cache = std::env::var_os("TENSOROPS_DEBUG_PROGRAM_CACHE").is_some();
-            let mut src_hasher = DefaultHasher::new();
-            program_src.hash(&mut src_hasher);
-            let program_src_hash = src_hasher.finish();
-
-            let program = if let Some(p) = self.program_cache.get(&program_src) {
-                if debug_cache {}
-                p.clone()
-            } else {
-                if debug_cache {}
-                let p = Program::builder()
-                    .src(program_src.clone())
-                    .devices(self.device.clone())
-                    .build(&self.context)
-                    .map_err(|e| {
-                        eprintln!("ERROR: Program build failed: {:?}", e);
-                        ocl_py_err(e, "Program Build")
-                    })?;
-                self.program_cache.insert(program_src.clone(), p.clone());
-                p
-            };
 
             for kernel_id in &current_batch_ids_to_run {
                 let (kernel_info, _resolved_inputs) =
@@ -287,6 +291,31 @@ impl Runtime {
                     continue;
                 }
 
+                // Program Cache Logic - compile each unique kernel source separately
+                // This avoids bundling and enables reuse of predefined kernels
+                let src = &kernel_info.kernel_src;
+                if !self.program_cache.contains_key(src) {
+                    let _src_hash = compute_source_hash(src);
+                    let _cache_path = self
+                        .cache_dir
+                        .join(format!("{}_{}.bin", self.device_id, _src_hash));
+
+                    // Skip disk cache for now - focus on in-memory caching for perf
+                    let p = Program::builder()
+                        .src(src.clone())
+                        .devices(self.device.clone())
+                        .build(&self.context)
+                        .map_err(|e| {
+                            eprintln!(
+                                "ERROR: Program build failed for kernel {}: {:?}",
+                                kernel_id, e
+                            );
+                            ocl_py_err(e, "Program Build")
+                        })?;
+                    self.program_cache.insert(src.clone(), p);
+                }
+                let program = self.program_cache.get(src).unwrap();
+
                 let name = match &kernel_info.kernel_type {
                     KernelType::Predefined(pk) => match pk {
                         PredefinedKernel::VecSum => "VecSum".to_string(),
@@ -299,7 +328,7 @@ impl Runtime {
                 };
 
                 let mut builder = OclKernel::builder();
-                builder.program(&program).name(&name).queue(queue.clone());
+                builder.program(program).name(&name).queue(queue.clone());
 
                 // Handle 2D vs 1D global work size
                 if let Some((gx, gy)) = kernel_info.global_work_size_2d {
@@ -315,9 +344,6 @@ impl Runtime {
                 let needs_local_mem = name.contains("TiledMatMul");
                 let input_count = batch_ocl_input_count.get(kernel_id).copied().unwrap_or(0);
 
-                if needs_local_mem {}
-
-                // Add arguments in correct order for TiledMatMul
                 if needs_local_mem && input_count > 0 && args.len() > input_count {
                     // Add input buffers first (A, B, M, N, K)
                     for i in 0..input_count {
@@ -359,11 +385,59 @@ impl Runtime {
                     eprintln!("ERROR building kernel '{}': {:?}", name, e);
                     ocl_py_err(e, "Kernel Build")
                 })?;
-                unsafe { k.enq().map_err(|e| ocl_py_err(e, "Kernel Enqueue"))? };
-            }
 
-            // Ensure all enqueued work is complete before scheduling dependent kernels.
-            queue.finish().map_err(|e| ocl_py_err(e, "Queue Finish"))?;
+                // Event handling
+                let mut wait_events = Vec::new();
+                if let Some(inputs) = &kernel_info.inputs {
+                    for inp in inputs {
+                        if let Ok(l_src) = inp.bind(py).extract::<LogicalInputSource>() {
+                            if let Some(evt) = kernel_events.get(&l_src.source_kernel_id) {
+                                wait_events.push(evt.clone());
+                            }
+                        }
+                    }
+                }
+
+                let mut event = unsafe { ocl::core::Event::from_raw(std::ptr::null_mut()) };
+
+                let (gws_arr, lws_arr, dim) =
+                    if let Some((gx, gy)) = kernel_info.global_work_size_2d {
+                        let g = [gx, gy, 1];
+                        let l = if let Some((lx, ly)) = kernel_info.local_work_size {
+                            Some([lx, ly, 1])
+                        } else {
+                            None
+                        };
+                        (g, l, 2)
+                    } else {
+                        ([work_size, 1, 1], None, 1)
+                    };
+
+                let mut event_list = ocl::EventList::new();
+                for evt in &wait_events {
+                    event_list.push(evt.clone());
+                }
+                let wait_list_opt = if wait_events.is_empty() {
+                    None
+                } else {
+                    Some(&event_list)
+                };
+
+                unsafe {
+                    ocl::core::enqueue_kernel(
+                        &queue,
+                        &k,
+                        dim,
+                        None,
+                        &gws_arr,
+                        lws_arr,
+                        wait_list_opt,
+                        Some(&mut event),
+                    )
+                    .map_err(|e| ocl_py_err(ocl::Error::from(e), "Kernel Enqueue"))?;
+                }
+                kernel_events.insert(*kernel_id, ocl::Event::from(event));
+            }
 
             // Persist device output buffers for dependency resolution in subsequent batches.
             for kernel_id_done in &current_batch_ids_to_run {
@@ -405,6 +479,11 @@ impl Runtime {
                 }
             }
         }
+
+        // Final wait
+        self.queue
+            .finish()
+            .map_err(|e| ocl_py_err(e, "Queue Finish"))?;
 
         let mut final_results = Vec::with_capacity(kernels_to_exec_py.len());
         for k_ref in kernels_to_exec_py {

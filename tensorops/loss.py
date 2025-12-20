@@ -217,30 +217,9 @@ class CrossEntropyLoss(Loss):
                 target_one_hot = Tensor(one_hot_rows, requires_grad=False)
                 target_one_hot.shape = (batch_size, num_classes)
 
-        # Stable log-softmax: subtract row-wise max before exponentiating.
-        # Use Max OP for autograd support (not .max() which materializes immediately)
-
-        # Debug
-        if logits.flat is not None:
-            import numpy as np
-
-            v = np.array(logits.flat)
-            print(f"Loss Logits: min={v.min()}, max={v.max()}, mean={v.mean()}")
-
-        from tensorops.tensor import Max
-
-        max_logits = Max(logits, axis=1)
-        # Detach max to avoid backprop through the stability shift
-        max_logits = max_logits.detach()
-        # Reshape to (batch, 1) and expand to (batch, num_classes) for broadcasting
-        max_logits = max_logits.reshape((batch_size, 1))
-        max_logits_expanded = max_logits.expand((batch_size, num_classes))
-
-        shifted = logits - max_logits_expanded
-        log_sum_exp = shifted.exp().sum(axis=1).log()
-        log_sum_exp = log_sum_exp.reshape((batch_size, 1))
-        log_sum_exp_expanded = log_sum_exp.expand((batch_size, num_classes))
-        log_probs = shifted - log_sum_exp_expanded
+        # Use the built-in stable softmax and take log to obtain log-probabilities
+        probs = logits.softmax(axis=1)
+        log_probs = probs.log()
 
         per_sample = (target_one_hot * log_probs).sum(axis=1) * Tensor(
             -1.0, requires_grad=False

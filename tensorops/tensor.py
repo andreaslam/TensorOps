@@ -6,7 +6,7 @@ import pickle
 from abc import ABC, abstractmethod
 from functools import reduce
 from operator import mul, xor
-from typing import Optional
+from typing import Optional, cast
 
 import tensorops_backend
 
@@ -105,7 +105,7 @@ class Tensor(ABC):
     @property
     def flat(self):
         if self.is_op and self._pending_kernel_result is not None:
-            # Trigger lazy materialization on first access
+            # Trigger lazy materialisation on first access
             _ = self.values
         return self._flat
 
@@ -682,8 +682,39 @@ class Tensor(ABC):
     def sigmoid(self):
         return 1 / (1 + math.e ** (-self))
 
+    def softmax(self, axis: int = -1):
+        """Numerically stable softmax along `axis`.
+
+        Uses the standard max-shift trick for stability and preserves shape.
+        """
+        shape = self.shape
+        assert shape is not None and len(shape) > 0, "Softmax requires known shape"
+        if axis < 0:
+            axis += len(shape)
+
+        # Row-wise max for stability (reduce along axis)
+        max_vals = Max(self, axis=axis).detach()
+        # Reshape reduced tensor to insert singleton dim at `axis`, then expand
+        reshaped = max_vals.reshape(
+            tuple(list(shape[:axis]) + [1] + list(shape[axis + 1 :]))
+        )
+        max_expanded = reshaped.expand(shape)
+
+        shifted = self - max_expanded
+        exp_vals = shifted.exp()
+        sum_exp = exp_vals.sum(axis=axis)
+        sum_reshaped = sum_exp.reshape(
+            tuple(list(shape[:axis]) + [1] + list(shape[axis + 1 :]))
+        )
+        sum_expanded = sum_reshaped.expand(shape)
+        return exp_vals / sum_expanded
+
+    def ramp(self):
+        """Ramp (alias for ReLU)."""
+        return self.relu()
+
     def seed_grad(self, seed: int) -> None:
-        # Seed gradients without forcing value materialization.
+        # Seed gradients without forcing value materialisation.
         cap = self.capacity
         if cap is None:
             vals = self.values
@@ -740,7 +771,7 @@ class Tensor(ABC):
         return f"{type(self).__name__}(shape={self.shape}, values={self.values}, requires_grad={self.requires_grad}, weight={self.weight})"
 
     def __len__(self) -> int:
-        # Avoid forcing lazy materialization.
+        # Avoid forcing lazy materialisation.
         if self._flat is not None:
             return len(self._flat)
         if self.capacity is not None:
@@ -777,6 +808,157 @@ class Tensor(ABC):
 
     def min_value(self):
         return min(self.flat if self.flat else self.values)
+
+    # Ergonomic accessors
+    def tolist(self, shaped: bool = True) -> list:
+        """Return tensor contents as a Python list.
+
+        - When `shaped=True` and `self.shape` is known, returns a nested list
+          matching the tensor's shape.
+        - When `shaped=False` or shape is unknown, returns a flat list.
+        - Works transparently whether the underlying storage is a Python list
+          or a bytes-like buffer (memoryview/bytearray/bytes).
+        """
+        # materialise pending backend results if needed
+        data = self.flat if self.flat is not None else self.values
+        if data is None:
+            return []
+
+        # Handle bytes-like efficiently
+        if isinstance(data, (bytearray, memoryview, bytes)):
+            mv = self._flat
+            if mv is None:
+                mv = memoryview(data)
+                # Ensure float view for element access
+                mv = mv.cast("f") if mv.format != "f" else mv
+
+            if shaped and self.shape is not None:
+                try:
+                    import numpy as np  # local import to avoid hard dependency at module import
+
+                    arr = np.frombuffer(cast(memoryview, mv), dtype=np.float32)
+                    shaped_arr = arr.reshape(self.shape)
+                    return cast(list, shaped_arr.tolist())
+                except Exception:
+                    # Fallback: flat list if numpy reshape fails/unavailable
+                    pass
+            return list(mv)
+
+        # Python list path
+        if shaped and self.shape is not None:
+            try:
+                import numpy as np
+
+                arr = np.asarray(data, dtype=np.float32)
+                return arr.reshape(self.shape).tolist()
+            except Exception:
+                pass
+        return list(data)
+
+    def numpy(self, copy: bool = False):
+        """Return a NumPy array view of the tensor.
+
+        - When `copy=False` and the tensor is backed by a bytes-like buffer,
+          returns a zero-copy `numpy.frombuffer` view (fast, memory-efficient).
+        - Otherwise returns a regular `numpy.array` copy.
+        - Reshapes to `self.shape` when available.
+        """
+        data = self.flat if self.flat is not None else self.values
+        if data is None:
+            raise ValueError("Tensor has no values")
+
+        import numpy as np
+
+        if isinstance(data, (bytearray, memoryview, bytes)) and not copy:
+            mv = self._flat
+            if mv is None:
+                mv = memoryview(data)
+                mv = mv.cast("f") if mv.format != "f" else mv
+            arr = np.frombuffer(cast(memoryview, mv), dtype=np.float32)
+        else:
+            if isinstance(data, (bytearray, memoryview, bytes)):
+                # Ensure conversion to list for consistent dtype/shape handling
+                base = list(memoryview(data).cast("f"))
+            else:
+                base = data
+            arr = np.array(base, dtype=np.float32)
+
+        if self.shape is not None:
+            try:
+                arr = arr.reshape(self.shape)
+            except Exception:
+                # If reshape fails, return flat array as a safe fallback
+                pass
+        return arr
+
+    def head(self, n: int = 10) -> list:
+        """Return the first `n` elements as a simple Python list.
+
+        Useful for quick inspection without printing large buffers.
+        Returns a flat list regardless of tensor shape.
+        """
+        data = self.flat if self.flat is not None else self.values
+        if data is None:
+            return []
+        if isinstance(data, (bytearray, memoryview, bytes)):
+            mv = self._flat
+            if mv is None:
+                mv = memoryview(data)
+                mv = mv.cast("f") if mv.format != "f" else mv
+            return list(mv[:n])
+        return list(data[:n])
+
+    def compute(self):
+        """materialise this tensor's values without requiring an explicit TensorContext.
+
+        Returns self for convenient chaining (e.g., `tensor.compute().tolist()`).
+        """
+        # Already materialised
+        if self._values is not None or self._flat is not None:
+            return self
+
+        # Leaf tensor with no op
+        if not getattr(self, "is_op", False):
+            return self
+
+        # If lazy backend results are attached, accessing `values` will populate buffers
+        if getattr(self, "_pending_kernel_result", None) is not None:
+            _ = self.values
+            return self
+
+        # Try current context if this op belongs to it
+        ctx = TensorContext.current_context
+        if ctx is not None:
+            try:
+                if self in ctx.ops:
+                    ctx.forward(recompute=False)
+                    _ = self.values
+                    return self
+            except Exception:
+                pass
+
+        # Build minimal temporary context: collect upstream ops and execute
+        tmp_ctx = TensorContext()
+        visited_ops = set()
+        visited_leaves = set()
+
+        def _collect_upstream(t):
+            if not isinstance(t, OP):
+                if t not in visited_leaves:
+                    visited_leaves.add(t)
+                    tmp_ctx.add_operands(t)
+                return
+            if t in visited_ops:
+                return
+            for p in getattr(t, "parents", []) or []:
+                _collect_upstream(p)
+            visited_ops.add(t)
+            tmp_ctx.add_op(t)
+
+        _collect_upstream(self)
+        tmp_ctx.forward(recompute=False)
+        _ = self.values
+        return self
 
 
 class Repeat(Tensor):
@@ -1298,7 +1480,7 @@ class LeakyReLU(OP):
 
         flat_vals = self.tensor1.flat
         # Some execution paths may leave `_flat` empty while the op still has
-        # pending results; force materialization if we expect data.
+        # pending results; force materialisation if we expect data.
         if (flat_vals is None or flat_vals == []) and self.tensor1.capacity:
             _ = self.tensor1.values
             flat_vals = self.tensor1.flat
@@ -1310,7 +1492,7 @@ class LeakyReLU(OP):
         )
 
         # If the pre-activation input was fused into an epilogue (e.g. MatMul+Bias+LeakyReLU),
-        # `self.tensor1` may have no standalone buffer to materialize.
+        # `self.tensor1` may have no standalone buffer to materialise.
         # For alpha > 0, the sign of the LeakyReLU output matches the sign of the input,
         # so we can compute the gradient mask from the output instead.
         if flat_vals is None or flat_vals == []:
@@ -1908,7 +2090,7 @@ class TensorContext:
             self.execute_ops(backward_graph_start, backward_kernel_start)
 
             if debug_nonfinite:
-                # After backward kernels have executed, grads should be materialized.
+                # After backward kernels have executed, grads should be materialised.
                 # Scan leaf tensors (operands) and any op parents for NaN/Inf.
                 candidates: set[Tensor] = set()
                 for t in self.operands:
@@ -1925,7 +2107,7 @@ class TensorContext:
                     g = getattr(t, "grads", None)
                     if g is None:
                         continue
-                    # Force lazy materialization if applicable.
+                    # Force lazy materialisation if applicable.
                     if (
                         getattr(g, "is_op", False)
                         and getattr(g, "_pending_kernel_result", None) is not None
