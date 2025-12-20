@@ -272,7 +272,12 @@ class Tensor(ABC):
             else:
                 raise ValueError("Cannot allocate grads for tensor with unknown size")
 
-        g = Tensor([0.0] * int(cap), requires_grad=False, grad_tensor=True)
+        g = Tensor(
+            [0.0] * int(cap),
+            requires_grad=False,
+            grad_tensor=True,
+            device=self.device,
+        )
         if self.shape is not None:
             g.shape = self.shape
         return g
@@ -330,7 +335,7 @@ class Tensor(ABC):
             result_shape = tuple(result_shape)
 
         # Return as Tensor
-        result = Tensor(result_data, requires_grad=False)
+        result = Tensor(result_data, requires_grad=False, device=self.device)
         result.shape = result_shape
         return result
 
@@ -359,7 +364,7 @@ class Tensor(ABC):
             result_shape = tuple(result_shape)
 
         # Return as Tensor
-        result = Tensor(result_data, requires_grad=False)
+        result = Tensor(result_data, requires_grad=False, device=self.device)
         result.shape = result_shape
         return result
 
@@ -458,7 +463,9 @@ class Tensor(ABC):
             )
             res = rt.execute_graph([k])
             out_bytes = res[0].val[0]
-            out = Tensor(out_bytes, requires_grad=self.requires_grad)
+            out = Tensor(
+                out_bytes, requires_grad=self.requires_grad, device=self.device
+            )
             out.shape = tuple(tgt_shape)
             return out
 
@@ -488,7 +495,9 @@ class Tensor(ABC):
                 src_flat_idx += src_coord * src_strides[dim]
             new_values[i] = data[src_flat_idx]
 
-        return Tensor(new_values, requires_grad=self.requires_grad).reshape(shape)
+        return Tensor(
+            new_values, requires_grad=self.requires_grad, device=self.device
+        ).reshape(shape)
 
     def permute(self, dims):
         assert len(dims) == len(self.shape), "Permute dims must match tensor dims"
@@ -525,59 +534,42 @@ class Tensor(ABC):
     def flatten(self) -> None:
         self.shape = (self.capacity,)
 
-    def __add__(self, other) -> Add:
-        return Add(
-            self,
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+    def _to_tensor_on_device(self, value, *, requires_grad: bool = False) -> Tensor:
+        return (
+            value
+            if isinstance(value, Tensor)
+            else Tensor(value, requires_grad=requires_grad, device=self.device)
         )
+
+    def __add__(self, other) -> Add:
+        return Add(self, self._to_tensor_on_device(other, requires_grad=False))
 
     def __radd__(self, other) -> Add:
-        return Add(
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-            self,
-        )
+        return Add(self._to_tensor_on_device(other, requires_grad=False), self)
 
     def __sub__(self, other) -> Sub:
-        return Sub(
-            self,
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-        )
+        return Sub(self, self._to_tensor_on_device(other, requires_grad=False))
 
     def __rsub__(self, other) -> Sub:
-        return Sub(
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-            self,
-        )
+        return Sub(self._to_tensor_on_device(other, requires_grad=False), self)
 
     def __mul__(self, other) -> ElementMul:
-        return ElementMul(
-            self,
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-        )
+        return ElementMul(self, self._to_tensor_on_device(other, requires_grad=False))
 
     def __rmul__(self, other) -> ElementMul:
-        return ElementMul(
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-            self,
-        )
+        return ElementMul(self._to_tensor_on_device(other, requires_grad=False), self)
 
     def __neg__(self) -> ElementMul:
-        return ElementMul(self, Tensor(-1, requires_grad=False))
+        return ElementMul(self, self._to_tensor_on_device(-1, requires_grad=False))
 
     def __truediv__(self, other) -> Div:
-        return Div(
-            self,
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-        )
+        return Div(self, self._to_tensor_on_device(other, requires_grad=False))
 
     def __rtruediv__(self, other) -> Div:
-        return Div(
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-            self,
-        )
+        return Div(self._to_tensor_on_device(other, requires_grad=False), self)
 
     def __matmul__(self, other) -> Tensor:
-        other = other if isinstance(other, Tensor) else Tensor(other)
+        other = self._to_tensor_on_device(other)
 
         shape_a = self.shape
         shape_b = other.shape
@@ -636,27 +628,23 @@ class Tensor(ABC):
         return MatMul(a_expanded, b_expanded)
 
     def __rmatmul__(self, other) -> Tensor:
-        other = other if isinstance(other, Tensor) else Tensor(other)
+        other = self._to_tensor_on_device(other)
         return other.__matmul__(self)
 
     def __pow__(self, other) -> Pow:
-        return Pow(
-            self,
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-        )
+        return Pow(self, self._to_tensor_on_device(other, requires_grad=False))
 
     def __rpow__(self, other) -> Pow:
-        return Pow(
-            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
-            self,
-        )
+        return Pow(self._to_tensor_on_device(other, requires_grad=False), self)
 
     def exp(self) -> Pow:
-        return Pow(Tensor(math.e, requires_grad=False), self)
+        return Pow(self._to_tensor_on_device(math.e, requires_grad=False), self)
 
     def log(self, base: float | Tensor = math.e):
         return GenericLog(
-            base if isinstance(base, Tensor) else Tensor(base, requires_grad=False),
+            base
+            if isinstance(base, Tensor)
+            else self._to_tensor_on_device(base, requires_grad=False),
             self,
         )
 
@@ -664,10 +652,10 @@ class Tensor(ABC):
         return StopGrad(self)
 
     def log10(self):
-        return GenericLog(Tensor(10, requires_grad=False), self)
+        return GenericLog(self._to_tensor_on_device(10, requires_grad=False), self)
 
     def log2(self):
-        return GenericLog(Tensor(2, requires_grad=False), self)
+        return GenericLog(self._to_tensor_on_device(2, requires_grad=False), self)
 
     def sin(self) -> Sin:
         return Sin(self)
@@ -728,15 +716,6 @@ class Tensor(ABC):
         if not data:
             raise ValueError("Cannot compute argmax of empty tensor")
 
-    def to(self, device):
-        """Transfer tensor to a different device.
-
-        Currently a no-op for single-device execution.
-        In multi-device setups, this would trigger data movement.
-        """
-        self.device = device
-        return self
-
         if axis is None:
             # Global argmax index
             if isinstance(data, (bytearray, memoryview, bytes)):
@@ -746,9 +725,8 @@ class Tensor(ABC):
                     mv = mv.cast("f") if mv.format != "f" else mv
                 max_idx = max(range(len(mv)), key=lambda i: mv[i])
                 return int(max_idx)
-            else:
-                max_idx = max(range(len(data)), key=lambda i: data[i])
-                return int(max_idx)
+            max_idx = max(range(len(data)), key=lambda i: data[i])
+            return int(max_idx)
 
         shape = self.shape
         if shape is None:
@@ -769,12 +747,18 @@ class Tensor(ABC):
         if keepdims:
             idx = np.expand_dims(idx, axis=axis)
         idx_list = idx.tolist()
-        out = Tensor(idx_list, requires_grad=False)
-        try:
-            out.shape = tuple(idx.shape)
-        except Exception:
-            out.shape = None
+        out = Tensor(idx_list, requires_grad=False, device=self.device)
+        out.shape = tuple(idx.shape)
         return out
+
+    def to(self, device):
+        """Transfer tensor to a different device.
+
+        Currently a no-op for single-device execution.
+        In multi-device setups, this would trigger data movement.
+        """
+        self.device = device
+        return self
 
     def seed_grad(self, seed: int) -> None:
         # Seed gradients without forcing value materialisation.
@@ -809,7 +793,12 @@ class Tensor(ABC):
 
         # Fast path: allocate the constant buffer in Rust (no Python list, no recursive flatten).
         memview, _ = tensorops_backend.tensor_full(float(seed), list(target_shape))
-        grad_t = Tensor(memview, requires_grad=False, grad_tensor=True)
+        grad_t = Tensor(
+            memview,
+            requires_grad=False,
+            grad_tensor=True,
+            device=self.device,
+        )
         grad_t.shape = target_shape
         grad_t._seed_value = seed
         self.grads = grad_t
@@ -1025,8 +1014,8 @@ class Tensor(ABC):
 
 
 class Repeat(Tensor):
-    def __init__(self, val, shape) -> None:
-        super().__init__(val)
+    def __init__(self, val, shape, device=None) -> None:
+        super().__init__(val, device=device)
         self.shape = shape
 
     def __repr__(self) -> str:
@@ -1034,25 +1023,25 @@ class Repeat(Tensor):
 
 
 # Helper Functions for Tensors
-def repeat(val, shape):
-    return Repeat(val, shape)
+def repeat(val, shape, device=None):
+    return Repeat(val, shape, device=device)
 
 
-def zeros(shape):
+def zeros(shape, device=None):
     cap = reduce(mul, shape, 1)
-    t = Tensor([0.0] * cap, requires_grad=False)
+    t = Tensor([0.0] * cap, requires_grad=False, device=device)
     t.shape = shape
     return t
 
 
-def ones(shape):
+def ones(shape, device=None):
     cap = reduce(mul, shape, 1)
-    t = Tensor([1.0] * cap, requires_grad=False)
+    t = Tensor([1.0] * cap, requires_grad=False, device=device)
     t.shape = shape
     return t
 
 
-def eye(shape):
+def eye(shape, device=None):
     assert len(shape) == 2 or len(shape) == 1, "shape must be 2D or 1D"
     if len(shape) == 1:
         n = shape[0]
@@ -1062,7 +1051,7 @@ def eye(shape):
 
     cap = rows * cols
     flat = [1.0 if (i % cols) == (i // cols) else 0.0 for i in range(cap)]
-    t = Tensor(flat, requires_grad=False)
+    t = Tensor(flat, requires_grad=False, device=device)
     t.reshape((rows, cols))
     return t
 
@@ -1071,6 +1060,15 @@ class OP(Tensor):
     def __init__(self, operands, requires_grad, weight) -> None:
         self.parents = [operands]
         self.parent_data_tensors = all(parent.values for parent in operands)
+
+        device_candidates = {
+            getattr(parent, "device", None) for parent in operands if parent is not None
+        }
+        device_candidates.discard(None)
+        if len(device_candidates) > 1:
+            device_list = ", ".join(sorted(str(d) for d in device_candidates))
+            raise ValueError(f"{type(self).__name__} cannot mix devices: {device_list}")
+        parent_device = next(iter(device_candidates), None)
 
         def _unwrap_shapeop(t: Tensor) -> Tensor:
             # ShapeOP is a view/metadata op; treat it as transparent for fusion decisions.
@@ -1087,6 +1085,7 @@ class OP(Tensor):
             requires_grad=requires_grad,
             weight=weight,
             is_op=True,
+            device=parent_device,
         )
 
         self.scalar_operands = []
@@ -1240,9 +1239,9 @@ class ReduceOP(OP):
 
         # Scalar operands for the backend reduce kernels
         self.scalar_operands = [
-            Tensor([float(self.pre_axis)], requires_grad=False),
-            Tensor([float(self.axis_len)], requires_grad=False),
-            Tensor([float(self.post_axis)], requires_grad=False),
+            Tensor([float(self.pre_axis)], requires_grad=False, device=self.device),
+            Tensor([float(self.axis_len)], requires_grad=False, device=self.device),
+            Tensor([float(self.post_axis)], requires_grad=False, device=self.device),
         ]
 
     def _expanded_output_grads_to_input(self):
@@ -1286,9 +1285,9 @@ class Max(ReduceOP):
         m_expanded = np.expand_dims(m, self.axis)
         mask_arr = (x == m_expanded).astype(np.float32)
 
-        mask = Tensor(mask_arr.flatten().tolist(), requires_grad=False).reshape(
-            self.tensor1.shape
-        )
+        mask = Tensor(
+            mask_arr.flatten().tolist(), requires_grad=False, device=self.device
+        ).reshape(self.tensor1.shape)
         self.tensor1.add_grad(expanded_grads * mask)
 
 
@@ -1313,9 +1312,9 @@ class Min(ReduceOP):
         m_expanded = np.expand_dims(m, self.axis)
         mask_arr = (x == m_expanded).astype(np.float32)
 
-        mask = Tensor(mask_arr.flatten().tolist(), requires_grad=False).reshape(
-            self.tensor1.shape
-        )
+        mask = Tensor(
+            mask_arr.flatten().tolist(), requires_grad=False, device=self.device
+        ).reshape(self.tensor1.shape)
         self.tensor1.add_grad(expanded_grads * mask)
 
 
@@ -1517,7 +1516,7 @@ class LeakyReLU(OP):
         alpha = (
             leaky_grad
             if isinstance(leaky_grad, Tensor)
-            else Tensor(leaky_grad, requires_grad=False)
+            else Tensor(leaky_grad, requires_grad=False, device=tensor1.device)
         )
         alpha.requires_grad = False
 
@@ -1573,7 +1572,9 @@ class LeakyReLU(OP):
 
         # d/dx leaky_relu(x) = 1 if x>0 else alpha
         scale = [1.0 if v > 0.0 else alpha for v in flat_vals]
-        scale_t = Tensor(scale, requires_grad=False).reshape(self.tensor1.shape)
+        scale_t = Tensor(scale, requires_grad=False, device=self.device).reshape(
+            self.tensor1.shape
+        )
         self.tensor1.add_grad(self.grads * scale_t)
 
 

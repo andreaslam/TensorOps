@@ -8,19 +8,18 @@ Enable via environment variable: TENSOROPS_BACKEND=mlx
 import platform
 from typing import Any, Dict, List, Tuple
 
+try:
+    import mlx.core as mx  # noqa: F401
+except Exception as e:
+    raise RuntimeError(
+        "MLX package not installed. Please install MLX before using this backend."
+    ) from e
 import numpy as np
-
 
 class MLXRuntime:
     def __init__(self) -> None:
         if platform.system().lower() != "darwin":
             raise RuntimeError("MLX backend is only supported on macOS (Darwin).")
-        try:
-            import mlx.core as mx  # noqa: F401
-        except Exception as e:
-            raise RuntimeError(
-                "MLX package not installed. Please install MLX before using this backend."
-            ) from e
 
         self.mx = None  # Lazy import
         self._kernel_outputs: Dict[
@@ -35,8 +34,9 @@ class MLXRuntime:
             self.mx = mx
         return self.mx
 
-    def _resolve_input(self, inp, outputs_cache: Dict[int, List[Any]]) -> np.ndarray:
-        """Resolve a kernel input (DirectInput or LogicalInputSource) to a NumPy array."""
+    def _resolve_input(self, inp, outputs_cache: Dict[int, List[Any]]):
+        """Resolve a kernel input (DirectInput or LogicalInputSource) to an MLX array."""
+        mx = self._import_mlx()
         import tensorops_backend
 
         # Check if it's a LogicalInputSource (reference to another kernel's output)
@@ -46,13 +46,13 @@ class MLXRuntime:
             src_idx = getattr(inp, "source_output_index", 0)
             if src_id in outputs_cache:
                 output = outputs_cache[src_id][src_idx]
-                # Convert to numpy if needed
-                if isinstance(output, np.ndarray):
-                    return output
+                # Convert to MLX if needed
+                if hasattr(output, "__array__"):
+                    return mx.array(output, dtype=mx.float32)
                 elif hasattr(output, "tolist"):
-                    return np.array(output.tolist())
+                    return mx.array(output.tolist(), dtype=mx.float32)
                 else:
-                    return np.array(output)
+                    return mx.array(output, dtype=mx.float32)
             else:
                 raise RuntimeError(f"Missing kernel output for dependency: {src_id}")
 
@@ -60,16 +60,16 @@ class MLXRuntime:
         if isinstance(inp, tensorops_backend.DirectInput):
             data = inp.data
             if isinstance(data, (list, np.ndarray)):
-                return np.array(data, dtype=np.float32)
+                return mx.array(data, dtype=mx.float32)
             elif isinstance(data, (bytes, bytearray, memoryview)):
                 # Convert bytes to float32 array
                 mv = memoryview(data)
-                return np.frombuffer(mv, dtype=np.float32)
+                return mx.array(np.frombuffer(mv, dtype=np.float32), dtype=mx.float32)
             else:
-                return np.array(data, dtype=np.float32)
+                return mx.array(data, dtype=mx.float32)
 
         # Fallback: try to convert directly
-        return np.array(inp, dtype=np.float32)
+        return mx.array(inp, dtype=mx.float32)
 
     def _map_kernel_to_mlx(
         self, kernel, outputs_cache: Dict[int, List[Any]]
@@ -104,18 +104,20 @@ class MLXRuntime:
         # For debugging kernel type
         # print(f"Kernel {kernel_id}: type_str={kernel_type_str}, inputs={len(resolved_inputs)}")
 
-        # Handle basic arithmetic operations
+        mx = self._import_mlx()
+
+        # Handle basic arithmetic operations (MLX ops mirror NumPy semantics)
         if "vecadd" in kernel_type_str or "add" in kernel_type_str:
             if len(resolved_inputs) >= 2:
                 result = resolved_inputs[0] + resolved_inputs[1]
             else:
-                result = resolved_inputs[0] if resolved_inputs else np.array([0.0])
+                result = resolved_inputs[0] if resolved_inputs else mx.array([0.0])
 
         elif "vecsub" in kernel_type_str or "sub" in kernel_type_str:
             if len(resolved_inputs) >= 2:
                 result = resolved_inputs[0] - resolved_inputs[1]
             else:
-                result = -resolved_inputs[0] if resolved_inputs else np.array([0.0])
+                result = -resolved_inputs[0] if resolved_inputs else mx.array([0.0])
 
         elif (
             "vecelementmul" in kernel_type_str
@@ -125,7 +127,7 @@ class MLXRuntime:
             if len(resolved_inputs) >= 2:
                 result = resolved_inputs[0] * resolved_inputs[1]
             else:
-                result = resolved_inputs[0] if resolved_inputs else np.array([1.0])
+                result = resolved_inputs[0] if resolved_inputs else mx.array([1.0])
 
         elif "vecdiv" in kernel_type_str or (
             "div" in kernel_type_str and "vecdiv" not in kernel_type_str
@@ -133,29 +135,29 @@ class MLXRuntime:
             if len(resolved_inputs) >= 2:
                 result = resolved_inputs[0] / resolved_inputs[1]
             else:
-                result = resolved_inputs[0] if resolved_inputs else np.array([1.0])
+                result = resolved_inputs[0] if resolved_inputs else mx.array([1.0])
 
         elif "vecpow" in kernel_type_str or "pow" in kernel_type_str:
             if len(resolved_inputs) >= 2:
-                result = np.power(resolved_inputs[0], resolved_inputs[1])
+                result = resolved_inputs[0] ** resolved_inputs[1]
             else:
-                result = resolved_inputs[0] if resolved_inputs else np.array([1.0])
+                result = resolved_inputs[0] if resolved_inputs else mx.array([1.0])
 
         # Activation functions
         elif "vecsin" in kernel_type_str or (
             "sin" in kernel_type_str and "vecsin" not in kernel_type_str
         ):
-            result = np.sin(resolved_inputs[0])
+            result = mx.sin(resolved_inputs[0])
 
         elif "veccos" in kernel_type_str or (
             "cos" in kernel_type_str and "veccos" not in kernel_type_str
         ):
-            result = np.cos(resolved_inputs[0])
+            result = mx.cos(resolved_inputs[0])
 
         elif "vectanh" in kernel_type_str or (
             "tanh" in kernel_type_str and "vectanh" not in kernel_type_str
         ):
-            result = np.tanh(resolved_inputs[0])
+            result = mx.tanh(resolved_inputs[0])
 
         elif "veclog" in kernel_type_str or (
             "log" in kernel_type_str and "veclog" not in kernel_type_str
@@ -163,9 +165,9 @@ class MLXRuntime:
             # VecLog with base support
             if scalar_inputs and len(scalar_inputs) > 0:
                 base = float(scalar_inputs[0])
-                result = np.log(resolved_inputs[-1]) / np.log(base)
+                result = mx.log(resolved_inputs[-1]) / mx.log(mx.array(base))
             else:
-                result = np.log(resolved_inputs[0])
+                result = mx.log(resolved_inputs[0])
 
         elif "vecleakyrelu" in kernel_type_str or (
             "leaky" in kernel_type_str and "relu" in kernel_type_str
@@ -175,7 +177,7 @@ class MLXRuntime:
             if scalar_inputs and len(scalar_inputs) > 0:
                 alpha = float(scalar_inputs[0])
             x = resolved_inputs[0]
-            result = np.where(x > 0, x, alpha * x)
+            result = mx.where(x > 0, x, alpha * x)
 
         # Reductions
         elif "vecsum" in kernel_type_str or (
@@ -189,12 +191,12 @@ class MLXRuntime:
                 post = int(scalar_inputs[2])
                 # Reshape for reduction along axis
                 try:
-                    x_reshaped = x.reshape((pre, axis_len, post))
-                    result = np.sum(x_reshaped, axis=1)  # Sum along the middle axis
-                except (ValueError, np.AxisError):
-                    result = np.sum(x)
+                    x_reshaped = mx.reshape(x, (pre, axis_len, post))
+                    result = mx.sum(x_reshaped, axis=1)
+                except Exception:
+                    result = mx.sum(x)
             else:
-                result = np.sum(x)
+                result = mx.sum(x)
 
         elif "vecmax" in kernel_type_str or (
             "max" in kernel_type_str and "vecmax" not in kernel_type_str
@@ -205,12 +207,12 @@ class MLXRuntime:
                 axis_len = int(scalar_inputs[1])
                 post = int(scalar_inputs[2])
                 try:
-                    x_reshaped = x.reshape((pre, axis_len, post))
-                    result = np.max(x_reshaped, axis=1)
-                except (ValueError, np.AxisError):
-                    result = np.max(x)
+                    x_reshaped = mx.reshape(x, (pre, axis_len, post))
+                    result = mx.max(x_reshaped, axis=1)
+                except Exception:
+                    result = mx.max(x)
             else:
-                result = np.max(x)
+                result = mx.max(x)
 
         elif "vecmin" in kernel_type_str or (
             "min" in kernel_type_str and "vecmin" not in kernel_type_str
@@ -221,34 +223,30 @@ class MLXRuntime:
                 axis_len = int(scalar_inputs[1])
                 post = int(scalar_inputs[2])
                 try:
-                    x_reshaped = x.reshape((pre, axis_len, post))
-                    result = np.min(x_reshaped, axis=1)
-                except (ValueError, np.AxisError):
-                    result = np.min(x)
+                    x_reshaped = mx.reshape(x, (pre, axis_len, post))
+                    result = mx.min(x_reshaped, axis=1)
+                except Exception:
+                    result = mx.min(x)
             else:
-                result = np.min(x)
+                result = mx.min(x)
 
         # MatMul (including with epilogue)
         elif "matmul" in kernel_type_str or "tiledmatmul" in kernel_type_str:
             a = resolved_inputs[0]
             b = resolved_inputs[1]
-            result = np.matmul(a, b)
+            result = mx.matmul(a, b)
 
             # Handle epilogue ops (fused into MatMul by backend)
             # Parse epilogue from inputs if present (A, B, M, N, K, then epilogue side inputs)
             if len(resolved_inputs) > 3:
                 try:
-                    m = int(resolved_inputs[2])
-                    n = int(resolved_inputs[3])
-                    k = int(resolved_inputs[4]) if len(resolved_inputs) > 4 else 0
-
                     # Apply any side inputs (bias, etc.)
                     for side_input in resolved_inputs[5:]:
                         # Simple broadcasting add for bias
                         if side_input.shape[-1] == result.shape[-1]:
                             result = result + side_input
                         elif side_input.shape[-1] == result.shape[-2]:
-                            result = result + side_input[..., np.newaxis]
+                            result = result + mx.expand_dims(side_input, axis=-2)
                 except (IndexError, ValueError):
                     # Fallback: skip epilogue
                     pass
@@ -258,7 +256,7 @@ class MLXRuntime:
             if resolved_inputs:
                 result = resolved_inputs[0]
             else:
-                result = np.zeros(1, dtype=np.float32)
+                result = mx.zeros((1,), dtype=mx.float32)
 
         else:
             # Unsupported kernel type - return input as-is
@@ -268,7 +266,7 @@ class MLXRuntime:
             if resolved_inputs:
                 result = resolved_inputs[0]
             else:
-                result = np.zeros(1, dtype=np.float32)
+                result = mx.zeros((1,), dtype=mx.float32)
 
         return result, num_outputs
 
@@ -291,14 +289,9 @@ class MLXRuntime:
                 # Execute kernel and get result
                 result, num_outputs = self._map_kernel_to_mlx(kernel, outputs_cache)
 
-                # Convert to numpy if needed
-                if not isinstance(result, np.ndarray):
-                    result = np.array(result).astype(np.float32)
-                else:
-                    result = result.astype(np.float32)
-
-                # Convert to bytes
-                result_bytes = result.tobytes()
+                # Ensure result is concrete and convert to bytes via NumPy view
+                result_np = np.array(result, dtype=np.float32)
+                result_bytes = result_np.tobytes()
 
                 # Store in cache for dependent kernels
                 outputs_cache[kernel_id] = [result]
