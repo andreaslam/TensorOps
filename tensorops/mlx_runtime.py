@@ -1,13 +1,4 @@
-"""MLX backend runtime adapter for macOS.
-
-This module provides a device-aware runtime for macOS using MLX (MLX framework).
-Maps TensorOps kernels to MLX operations and handles graph execution.
-Enable via environment variable: TENSOROPS_BACKEND=mlx
-"""
-
-import os
 import platform
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Tuple
 
 try:
@@ -20,6 +11,12 @@ import numpy as np
 
 
 class MLXRuntime:
+    """MLX backend runtime adapter for macOS.
+
+    This module provides a device-aware runtime for macOS using MLX (MLX framework).
+    Maps TensorOps kernels to MLX operations and handles graph execution.
+    Enable via environment variable: TENSOROPS_BACKEND=mlx
+    """
     def __init__(self) -> None:
         if platform.system().lower() != "darwin":
             raise RuntimeError("MLX backend is only supported on macOS (Darwin).")
@@ -28,6 +25,19 @@ class MLXRuntime:
         self._kernel_outputs: Dict[
             int, List[Any]
         ] = {}  # Cache kernel outputs for dependencies
+
+    @staticmethod
+    def _is_mx_array(val: Any) -> bool:
+        """Best-effort check for an MLX array without importing numpy.
+
+        MLX arrays live under the `mlx.core` module with class name `array`.
+        Avoid converting them back into MLX via `mx.array(...)` to keep the
+        computation graph intact and prevent premature evaluation.
+        """
+
+        return hasattr(val, "__class__") and getattr(
+            val.__class__, "__module__", ""
+        ).startswith("mlx")
 
     def _import_mlx(self):
         """Lazy import of MLX to avoid startup overhead."""
@@ -41,6 +51,10 @@ class MLXRuntime:
         """Resolve a kernel input (DirectInput or LogicalInputSource) to an MLX array."""
         mx = self._import_mlx()
         import tensorops_backend
+
+        # Fast-path: already an MLX array (preserve graph node and laziness)
+        if self._is_mx_array(inp):
+            return inp
 
         # Check if it's a LogicalInputSource (reference to another kernel's output)
         if isinstance(inp, tensorops_backend.LogicalInputSource):
@@ -57,6 +71,8 @@ class MLXRuntime:
                 )
 
             output = outputs_cache[src_id][src_idx]
+            if self._is_mx_array(output):
+                return output
             # Convert to MLX if needed
             if hasattr(output, "__array__"):
                 return mx.array(output, dtype=mx.float32)
@@ -68,6 +84,8 @@ class MLXRuntime:
         # DirectInput: extract data directly
         if isinstance(inp, tensorops_backend.DirectInput):
             data = inp.data
+            if self._is_mx_array(data):
+                return data
             if isinstance(data, (list, np.ndarray)):
                 return mx.array(data, dtype=mx.float32)
             elif isinstance(data, (bytes, bytearray, memoryview)):
@@ -290,126 +308,103 @@ class MLXRuntime:
                 deps.add(inp.source_kernel_id)
         return deps
 
-    def _execute_kernel_task(
-        self, kernel, outputs_cache: Dict[int, List[Any]], completed_deps
-    ):
-        """Execute a single kernel and return (kernel_id, result_bytes, success).
-
-        Args:
-            kernel: The kernel to execute
-            outputs_cache: Shared cache of completed kernel outputs
-            completed_deps: Shared set of completed kernel IDs (for validation)
-        """
-        try:
-            kernel_id = getattr(kernel, "kernel_id", 0)
-
-            # Execute kernel and get result
-            result, num_outputs = self._map_kernel_to_mlx(kernel, outputs_cache)
-
-            # Ensure result is concrete and convert to bytes via NumPy view
-            result_np = np.array(result, dtype=np.float32)
-            result_bytes = result_np.tobytes()
-
-            # Store in cache for dependent kernels
-            # For multi-output kernels (e.g., fused ops), store result for each output
-            # Currently we return a single result, so replicate it for all outputs
-            outputs_cache[kernel_id] = [result] * num_outputs
-
-            return kernel_id, result_bytes, True, num_outputs
-        except Exception as e:
-            # Return error state with the exception for better debugging
-            print(
-                f"Warning: Failed to execute kernel {getattr(kernel, 'kernel_id', '?')}: {e}"
-            )
-            import traceback
-
-            traceback.print_exc()
-            kernel_id = getattr(kernel, "kernel_id", 0)
-            num_outputs = getattr(kernel, "num_output_bufs", 1)
-            # Pre-populate error result in cache to prevent dependent kernels from hanging
-            outputs_cache[kernel_id] = [None] * num_outputs
-            return kernel_id, None, False, num_outputs
-
     def execute_graph(self, kernels):
-        """Execute graph using MLX with async non-dependent kernels.
+        """Execute the entire kernel set as a single MLX evaluation.
 
-        Receives a list of KernelTensorOps objects and maps them to MLX operations.
-        Launches all non-dependent kernels concurrently, respecting dependencies.
-        Returns results in the same format as Rust backend (KernelResult-like objects).
+        Instead of running each kernel eagerly, build the MLX computation graph for
+        all kernels first, then trigger one `mx.eval` over every output. This keeps
+        data on-device and lets MLX fuse/optimise across kernel boundaries.
         """
+
         if not kernels:
             return []
 
-        # Build dependency graph
+        mx = self._import_mlx()
         kernel_by_id = {
             getattr(k, "kernel_id", i): (k, i) for i, k in enumerate(kernels)
         }
-        dependencies = {
-            getattr(k, "kernel_id", i): self._get_kernel_dependencies(k)
-            for i, k in enumerate(kernels)
-        }
-
         outputs_cache: Dict[int, List[Any]] = {}
         results_order: List[Any] = [None] * len(kernels)
-        completed: set = set()
 
-        with ThreadPoolExecutor(max_workers=min(min(32, os.cpu_count() + 4), len(kernels))) as executor:
-            # Process kernels in waves: launch all ready kernels, wait, repeat
-            while len(completed) < len(kernels):
-                # Find ready kernels (no unmet dependencies)
-                ready = [
-                    kid
-                    for kid, (kernel, idx) in kernel_by_id.items()
-                    if kid not in completed
-                    and all(dep in completed for dep in dependencies[kid])
-                ]
+        # Build the lazy MLX graph first.
+        eval_plan: List[Tuple[int, int, int, Any]] = []
+        eval_targets: List[Any] = []
 
-                if not ready:
-                    # Circular dependency or error
-                    raise RuntimeError(
-                        "Circular dependency or no ready kernels to execute"
-                    )
+        for kid in sorted(kernel_by_id):
+            kernel, idx = kernel_by_id[kid]
+            num_outputs = getattr(kernel, "num_output_bufs", 1)
+            try:
+                result, num_outputs = self._map_kernel_to_mlx(kernel, outputs_cache)
+                outputs_cache[kid] = [result] * num_outputs
+                eval_plan.append((kid, idx, num_outputs, result))
+                eval_targets.append(result)
+            except Exception as e:
+                print(
+                    f"Warning: Failed to build kernel {getattr(kernel, 'kernel_id', '?')}: {e}"
+                )
+                import traceback
 
-                # Launch all ready kernels concurrently
-                futures = {
-                    executor.submit(
-                        self._execute_kernel_task,
-                        kernel_by_id[kid][0],
-                        outputs_cache,
-                        completed,
-                    ): kid
-                    for kid in ready
-                }
+                traceback.print_exc()
+                outputs_cache[kid] = [None] * num_outputs
+                mock_result = type(
+                    "KernelResult",
+                    (),
+                    {
+                        "val": [bytearray(4096) for _ in range(num_outputs)],
+                        "kernel_id": kid,
+                    },
+                )()
+                results_order[idx] = mock_result
 
-                # Collect results as they complete
-                for future in as_completed(futures):
-                    kid = futures[future]
-                    kernel_id, result_bytes, success, num_outputs = future.result()
+        # Trigger a single MLX evaluation across all outputs.
+        try:
+            if eval_targets:
+                mx.eval(*eval_targets)
+        except Exception as e:
+            print(f"Warning: MLX eval failed for fused graph: {e}")
+            import traceback
 
-                    if success and result_bytes is not None:
-                        idx = kernel_by_id[kid][1]
-                        mock_result = type(
-                            "KernelResult",
-                            (),
-                            {
-                                "val": [bytearray(result_bytes)],
-                                "kernel_id": kernel_id,
-                            },
-                        )()
-                        results_order[idx] = mock_result
-                    else:
-                        # Fallback for failed kernel
-                        idx = kernel_by_id[kid][1]
-                        mock_result = type(
-                            "KernelResult",
-                            (),
-                            {
-                                "val": [bytearray(4096) for _ in range(num_outputs)],
-                                "kernel_id": kernel_id,
-                            },
-                        )()
-                        results_order[idx] = mock_result
+            traceback.print_exc()
+            # Fallback: mark all unevaluated kernels as failed.
+            for kid, idx, num_outputs, _ in eval_plan:
+                if results_order[idx] is not None:
+                    continue
+                outputs_cache[kid] = [None] * num_outputs
+                mock_result = type(
+                    "KernelResult",
+                    (),
+                    {
+                        "val": [bytearray(4096) for _ in range(num_outputs)],
+                        "kernel_id": kid,
+                    },
+                )()
+                results_order[idx] = mock_result
+            return results_order
 
-                    completed.add(kid)
+        # Materialise outputs to host bytearrays once after the fused eval.
+        for kid, idx, num_outputs, result in eval_plan:
+            if results_order[idx] is not None:
+                continue
+            try:
+                result_np = np.array(result, dtype=np.float32)
+                result_bytes = result_np.tobytes()
+                mock_result = type(
+                    "KernelResult",
+                    (),
+                    {
+                        "val": [bytearray(result_bytes) for _ in range(num_outputs)],
+                        "kernel_id": kid,
+                    },
+                )()
+            except Exception:
+                mock_result = type(
+                    "KernelResult",
+                    (),
+                    {
+                        "val": [bytearray(4096) for _ in range(num_outputs)],
+                        "kernel_id": kid,
+                    },
+                )()
+            results_order[idx] = mock_result
 
         return results_order
