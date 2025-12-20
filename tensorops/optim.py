@@ -32,6 +32,14 @@ def _numeric_grad_for_param(param: Tensor) -> list[float] | None:
             f"Gradient length {len(g_list)} does not match param length {len(p_vals)}"
         )
 
+    # Defensive: stop immediately on NaN/Inf grads to avoid corrupting weights.
+    # (If a single param update becomes NaN, the whole model will quickly follow.)
+    for gi in g_list:
+        if math.isnan(gi) or math.isinf(gi):
+            raise ValueError(
+                f"Non-finite gradient detected for param (shape={getattr(param, 'shape', None)})."
+            )
+
     return g_list
 
 

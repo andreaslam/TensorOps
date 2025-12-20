@@ -119,15 +119,52 @@ class SequentialModel(Model):
                 ):
                     model_output_tensors.values = y.values
                     model_target_tensors.values = training_target.values
-                # Rebuild loss using current outputs/targets for list case
+                # Rebuild loss using current outputs/targets for list case.
+                # Loss functions are defined as loss(actual, target).
                 self.loss = self.loss_criterion(
-                    self.targets, self.model_output_layer.layer_output_tensors
+                    self.model_output_layer.layer_output_tensors, self.targets
                 )
             else:
-                # Single tensor case (for batched training): rebuild loss graph each call
-                # This avoids stale references created during model init.
-                self.loss = self.loss_criterion(output, target)
-            self.context.forward(recompute=True)
+                # Single Tensor case (batched training): keep a stable loss graph
+                # wired to the model placeholders, and only update values.
+                assert self.targets is not None, "Targets not defined"
+                # Keep model placeholders in sync with provided tensors.
+                self.targets.values = target.values
+                try:
+                    if (
+                        self.model_output_layer is not None
+                        and getattr(self.model_output_layer, "layer_output", None)
+                        is not None
+                        and getattr(output, "values", None) is not None
+                    ):
+                        self.model_output_layer.layer_output.values = output.values
+                except Exception:
+                    # If output is lazy/unmaterialized, leave it wired as-is.
+                    pass
+
+                if self.loss is None:
+                    self.loss = self.loss_criterion(
+                        self.model_output_layer.layer_output, self.targets
+                    )
+
+                # Clear cached values in the loss subgraph to force recomputation
+                # without recomputing the model itself.
+                stop_set = {self.model_output_layer.layer_output, self.targets}
+
+                def clear_up(t):
+                    if t in stop_set:
+                        return
+                    # Only clear if it's an OP (not a leaf tensor like weights/inputs)
+                    if getattr(t, "is_op", False):
+                        if hasattr(t, "values"):
+                            t.values = None
+                        if hasattr(t, "parents"):
+                            for p in t.parents:
+                                clear_up(p)
+
+                clear_up(self.loss)
+
+            self.context.forward(recompute=False)
         return self.loss  # type: ignore
 
 

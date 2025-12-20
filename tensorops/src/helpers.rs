@@ -21,7 +21,9 @@ const KERNEL_VEC_LEAKY_RELU: &str = "VecLeakyReLU";
 const KERNEL_VEC_SUM: &str = "VecSum";
 const KERNEL_VEC_MAX: &str = "VecMax";
 const KERNEL_VEC_MIN: &str = "VecMin";
-const KERNEL_MAT_MUL: &str = "MatMul";
+// MatMul predefined kernel name must match an actual kernel in kernel.cl.
+// The canonical tiled kernel is the 16x16 variant.
+const KERNEL_MAT_MUL: &str = "TiledMatMul_16x16";
 
 fn extract_kernel_code(source: &str, kernel_name: &str) -> Option<String> {
     let kernel_sig_pattern = format!("__kernel void {}", kernel_name);

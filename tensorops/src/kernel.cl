@@ -8,13 +8,20 @@
  */
 __kernel void VecAdd(__global const float* A,
                      __global const float* B,
-                     __global float* C)
+                     __global float* C,
+                     float a_len_f,
+                     float b_len_f)
 {
     // Get the unique global index for this work-item
     int gid = get_global_id(0);
 
+    int a_len = (int)a_len_f;
+    int b_len = (int)b_len_f;
+    int a_idx = (a_len == 1) ? 0 : gid;
+    int b_idx = (b_len == 1) ? 0 : gid;
+
     // Perform the element-wise addition
-    C[gid] = A[gid] + B[gid];
+    C[gid] = A[a_idx] + B[b_idx];
 }
 
 /*
@@ -27,13 +34,20 @@ __kernel void VecAdd(__global const float* A,
  */
 __kernel void VecSub(__global const float* A,
                      __global const float* B,
-                     __global float* C)
+                     __global float* C,
+                     float a_len_f,
+                     float b_len_f)
 {
     // Get the unique global index for this work-item
     int gid = get_global_id(0);
 
+    int a_len = (int)a_len_f;
+    int b_len = (int)b_len_f;
+    int a_idx = (a_len == 1) ? 0 : gid;
+    int b_idx = (b_len == 1) ? 0 : gid;
+
     // Perform the element-wise subtraction
-    C[gid] = A[gid] - B[gid];
+    C[gid] = A[a_idx] - B[b_idx];
 }
 
 /*
@@ -46,12 +60,19 @@ __kernel void VecSub(__global const float* A,
  */
 __kernel void VecElementMul(__global const float* A,
                             __global const float* B,
-                            __global float* C)
+                            __global float* C,
+                            float a_len_f,
+                            float b_len_f)
 {
     int gid = get_global_id(0);
 
+    int a_len = (int)a_len_f;
+    int b_len = (int)b_len_f;
+    int a_idx = (a_len == 1) ? 0 : gid;
+    int b_idx = (b_len == 1) ? 0 : gid;
+
     // Perform the element-wise multiplication
-    C[gid] = A[gid] * B[gid];
+    C[gid] = A[a_idx] * B[b_idx];
 }
 
 /*
@@ -64,12 +85,19 @@ __kernel void VecElementMul(__global const float* A,
  */
 __kernel void VecDiv(__global const float* A,
                             __global const float* B,
-                            __global float* C)
+                            __global float* C,
+                            float a_len_f,
+                            float b_len_f)
 {
     int gid = get_global_id(0);
 
+    int a_len = (int)a_len_f;
+    int b_len = (int)b_len_f;
+    int a_idx = (a_len == 1) ? 0 : gid;
+    int b_idx = (b_len == 1) ? 0 : gid;
+
     // Perform the element-wise division
-    C[gid] = A[gid] / B[gid];
+    C[gid] = A[a_idx] / B[b_idx];
 }
 
 /*
@@ -341,45 +369,143 @@ __kernel void VecExpandTemplate(
     out[gid] = src[src_idx];
 }
 
+/*
+ * VecPermuteTemplate: Stride-based permute/transpose copy.
+ *
+ * This kernel copies from a source tensor into a contiguous output tensor
+ * given:
+ * - tgt_shape / tgt_strides: describe the output indexing (row-major)
+ * - src_strides: strides to use when mapping output coordinates back into the
+ *   source buffer.
+ *
+ * For a permute with dims, Python precomputes:
+ *   src_strides[i] = parent_strides[dims[i]]
+ * and sets tgt_shape to the permuted shape.
+ *
+ * Inputs:
+ * src:        __global float* - source buffer
+ * src_shape:  __global float* - (unused, kept for signature symmetry)
+ * src_strides:__global float* - strides mapping output coords -> source index
+ * tgt_shape:  __global float* - target shape
+ * tgt_strides:__global float* - target row-major strides
+ * out:        __global float* - output buffer
+ */
+#define RANK 1
+__kernel void VecPermuteTemplate(
+    __global const float* src,
+    __global const float* src_shape,
+    __global const float* src_strides,
+    __global const float* tgt_shape,
+    __global const float* tgt_strides,
+    __global float* out
+) {
+    int gid = get_global_id(0);
+
+    // Compute total output size
+    int tgt_size = 1;
+    for (int i = 0; i < RANK; i++) {
+        tgt_size *= (int)tgt_shape[i];
+    }
+    if (gid >= tgt_size) return;
+
+    // Map flat gid -> multi-dim coords in target
+    int src_idx = 0;
+    for (int dim = 0; dim < RANK; dim++) {
+        int stride = (int)tgt_strides[dim];
+        int tdim = (int)tgt_shape[dim];
+        int coord = (gid / stride) % tdim;
+        src_idx += coord * (int)src_strides[dim];
+    }
+
+    out[gid] = src[src_idx];
+}
 
 /*
- * MatMul: Batched Matrix Multiplication (C = A @ B)
+ * TiledMatMul_16x16: Tiled Matrix Multiplication with 2D NDRange
+ *
+ * Execution model:
+ *   - 2D global NDRange: (M, N) where each workitem computes one output element C[row, col]
+ *   - 2D local NDRange (workgroup): 16x16
+ *   - Cooperative tiling: tiles of 16x16 from A and B are loaded into local memory
+ *   - Inner K-loop over tile blocks of size 16
+ *   - Barriers synchronize before loading next tile
+ *
+ * Epilogue fusion: Users can provide epilogue_src that operates on 'acc' register.
+ *   The epilogue code replaces EPILOGUE_PLACEHOLDER in this kernel.
+ *   Example: float result = sin(acc) + bias[col]; C[row, col] = result;
+ *
  * Inputs:
- * A: __global float* - Matrix A (Batch x M x K)
- * B: __global float* - Matrix B (Batch x K x N)
+ * A: __global float* - Matrix A (M x K)
+ * B: __global float* - Matrix B (K x N)
  * M_buf: __global float* - M dimension (scalar)
  * N_buf: __global float* - N dimension (scalar)
  * K_buf: __global float* - K dimension (scalar)
  * Output:
- * C: __global float* - Matrix C (Batch x M x N)
+ * C: __global float* - Matrix C (M x N)
  */
-__kernel void MatMul(__global const float* A,
-                     __global const float* B,
-                     __global const float* M_buf,
-                     __global const float* N_buf,
-                     __global const float* K_buf,
-                     __global float* C)
+#define TILE_SIZE 16
+
+__kernel void TiledMatMul_16x16(
+    __global const float* A,
+    __global const float* B,
+    __global const float* M_buf,
+    __global const float* N_buf,
+    __global const float* K_buf,
+    __local float* A_tile,
+    __local float* B_tile,
+    __global float* C
+)
 {
     int M = (int)M_buf[0];
     int N = (int)N_buf[0];
     int K = (int)K_buf[0];
 
-    int gid = get_global_id(0);
-    
-    int batch_size = M * N;
-    int batch_idx = gid / batch_size;
-    int rem = gid % batch_size;
-    
-    int row = rem / N;
-    int col = rem % N;
+    int local_row = get_local_id(0);
+    int local_col = get_local_id(1);
+    int global_row = get_group_id(0) * TILE_SIZE + local_row;
+    int global_col = get_group_id(1) * TILE_SIZE + local_col;
 
-    int a_offset = batch_idx * M * K;
-    int b_offset = batch_idx * K * N;
-    
-    float sum = 0.0f;
-    for (int k = 0; k < K; ++k) {
-        sum += A[a_offset + row * K + k] * B[b_offset + k * N + col];
+    float acc = 0.0f;
+
+    // Process K in chunks of TILE_SIZE
+    for (int tile_k = 0; tile_k < K; tile_k += TILE_SIZE) {
+        // Load tile from A: [TILE_SIZE x TILE_SIZE] at position [global_row, tile_k]
+        // Each workitem (local_row, local_col) loads A[global_row, tile_k + local_col]
+        if (global_row < M && (tile_k + local_col) < K) {
+            A_tile[local_row * TILE_SIZE + local_col] = A[global_row * K + tile_k + local_col];
+        } else {
+            A_tile[local_row * TILE_SIZE + local_col] = 0.0f;
+        }
+
+        // Load tile from B: [TILE_SIZE x TILE_SIZE] at position [tile_k, global_col]
+        // Each workitem (local_row, local_col) loads B[tile_k + local_row, global_col]
+        if ((tile_k + local_row) < K && global_col < N) {
+            B_tile[local_row * TILE_SIZE + local_col] = B[(tile_k + local_row) * N + global_col];
+        } else {
+            B_tile[local_row * TILE_SIZE + local_col] = 0.0f;
+        }
+
+        // Synchronize: all threads must finish loading before compute
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        // Compute: each thread accumulates over the tile
+        // This thread (local_row, local_col) computes:
+        //   acc += sum of A_tile[local_row, :] * B_tile[:, local_col]
+        for (int k = 0; k < TILE_SIZE; k++) {
+            acc += A_tile[local_row * TILE_SIZE + k] * B_tile[k * TILE_SIZE + local_col];
+        }
+
+        // Synchronize before next tile iteration
+        barrier(CLK_LOCAL_MEM_FENCE);
     }
-    C[gid] = sum;
+
+    // Write result (epilogue fusion happens here)
+    if (global_row < M && global_col < N) {
+        // EPILOGUE_PLACEHOLDER will be replaced by user-provided epilogue code
+        // Example: float result = sin(acc) + bias[global_col];
+        // The placeholder allows fusion of elementwise ops without rewriting this kernel
+        EPILOGUE_PLACEHOLDER
+        C[global_row * N + global_col] = acc;
+    }
 }
 

@@ -121,6 +121,15 @@ def prepare_kernel_snippets():
         else:
             matches[key] = val.strip().rstrip(";")
 
+    # Some predefined kernels (VecAdd/VecSub/VecElementMul/VecDiv) may include
+    # scalar-broadcast indexing helpers (e.g. a_idx/b_idx) which are not valid
+    # inside fused kernels (the fusor injects only the RHS expression).
+    # Override these to the canonical gid-indexed expressions for fusion.
+    matches[PredefinedKernel.VecAdd] = "A[gid] + B[gid]"
+    matches[PredefinedKernel.VecSub] = "A[gid] - B[gid]"
+    matches[PredefinedKernel.VecElementMul] = "A[gid] * B[gid]"
+    matches[PredefinedKernel.VecDiv] = "A[gid] / B[gid]"
+
     return matches
 
 
@@ -142,6 +151,386 @@ op_map = {
     Max: PredefinedKernel.VecMax,
     Min: PredefinedKernel.VecMin,
 }
+
+# Epilogue-fusible ops (elementwise, shape-preserving)
+EPILOGUE_FUSIBLE_OPS = {
+    Add,
+    Sub,
+    ElementMul,
+    Div,
+    Sin,
+    Cos,
+    Tanh,
+    LeakyReLU,
+    Pow,
+    GenericLog,
+}
+
+
+class AnchoredKernel:
+    """
+    A kernel with a tiling anchor (e.g., MatMul) and optional epilogue ops.
+
+    The anchor defines:
+    - The iteration structure (2D NDRange for MatMul)
+    - Memory layout (tiles in local memory)
+    - Loop nests (K-loop, tile loads/stores)
+
+    Epilogue ops are elementwise and fuse inside the anchor kernel:
+    - They operate on the accumulator register before writeback
+    - They do not require additional global reads
+    - They must be shape-preserving
+
+    Example:
+        C = A @ B          # MatMul anchor
+        D = C + bias       # Add epilogue (fused)
+        E = relu(D)        # LeakyReLU epilogue (fused)
+        Output: E (one kernel, zero intermediate writes)
+    """
+
+    def __init__(
+        self,
+        anchor_op: "MatMul",
+        epilogue_ops: List["OP"],
+        kernel_id_val: int,
+        tile_size: int = 16,
+    ):
+        assert type(anchor_op).__name__ == "MatMul", "Only MatMul anchors supported"
+        self.anchor = anchor_op
+        self.epilogue_ops = epilogue_ops  # List of elementwise OPs to fuse
+        self.kernel_id = kernel_id_val
+        self.tile_size = tile_size
+
+    @staticmethod
+    def try_build_from_ops(
+        ops: List["OP"], kernel_id_val: int, tile_size: int = 16
+    ) -> Union["AnchoredKernel", None]:
+        """
+        Try to detect an anchored pattern in a list of sequential ops.
+        Returns AnchoredKernel if found, None otherwise.
+
+        Pattern:
+        - ops[0] is MatMul
+        - ops[1:] are all epilogue-fusible (elementwise, shape-preserving)
+        - No new external dependencies introduced by epilogue ops
+        """
+        if not ops or type(ops[0]).__name__ != "MatMul":
+            return None
+
+        anchor = ops[0]
+        epilogues = ops[1:] if len(ops) > 1 else []
+
+        # Validate all epilogues are fusible
+        for epi in epilogues:
+            op_type = type(epi)
+            if op_type not in EPILOGUE_FUSIBLE_OPS:
+                return None  # Not an epilogue-fusible op
+
+            # Epilogue must have only one parent (the previous op in sequence or anchor)
+            # OR it can be a binary op with a side input.
+            # Special-case LeakyReLU: it may carry `alpha` as a second scalar parent.
+            if len(epi.parents) != 1:
+                if (
+                    op_type in (Add, Sub, ElementMul, Div, Pow)
+                    and len(epi.parents) == 2
+                ):
+                    pass  # Allowed
+                elif op_type is LeakyReLU and len(epi.parents) == 2:
+                    # Allow scalar alpha (len 1) as the second parent.
+                    alpha_parent = epi.parents[1]
+                    while type(alpha_parent).__name__ in ("ShapeOP", "StopGrad"):
+                        alpha_parent = getattr(alpha_parent, "tensor1", alpha_parent)
+                    alpha_cap = getattr(alpha_parent, "capacity", None)
+                    alpha_shape = getattr(alpha_parent, "shape", None)
+                    if alpha_cap == 1 or alpha_shape in ((), (1,)):
+                        pass
+                    else:
+                        return None
+                else:
+                    return None  # Multiple dependencies = new external input
+
+        ak = AnchoredKernel(anchor, epilogues, kernel_id_val, tile_size)
+        return ak
+
+    def generate_epilogue_code(self, M: int, N: int) -> Tuple[str, List["Tensor"]]:
+        """
+        Generate OpenCL code that fuses epilogue ops into the accumulator register.
+        Returns a tuple: (code_string, list_of_side_input_tensors).
+        """
+        if not self.epilogue_ops:
+            return "", []
+
+        code_lines = []
+        side_inputs = []
+        acc_var = "acc"  # Tiled matmul accumulates into 'acc'
+
+        prev_op = self.anchor
+
+        for i, op in enumerate(self.epilogue_ops):
+            op_type = type(op)
+            side_input = None
+            side_input_name = f"side_input_{i}"
+            acc_is_first = True
+
+            # LeakyReLU may have a scalar alpha parent; treat it as a scalar (either embedded
+            # constant or a 1-element side input) and do not treat it as a binary epilogue.
+            leaky_alpha_expr = None
+            if op_type is LeakyReLU and len(op.parents) == 2:
+                alpha_parent = op.parents[1]
+                while type(alpha_parent).__name__ in ("ShapeOP", "StopGrad"):
+                    alpha_parent = getattr(alpha_parent, "tensor1", alpha_parent)
+
+                # Prefer embedding as a constant if we can cheaply read it.
+                try:
+                    if getattr(alpha_parent, "capacity", None) == 1:
+                        alpha_val = float(alpha_parent.item())
+                        leaky_alpha_expr = f"{alpha_val}f"
+                except Exception:
+                    leaky_alpha_expr = None
+
+                # Fallback: pass alpha as a scalar side input.
+                if leaky_alpha_expr is None:
+                    side_inputs.append(alpha_parent)
+                    leaky_alpha_expr = f"side_input_{len(side_inputs) - 1}[0]"
+
+            if len(op.parents) == 2:
+                if op.parents[0] is prev_op:
+                    side_input = op.parents[1]
+                    acc_is_first = True
+                elif op.parents[1] is prev_op:
+                    side_input = op.parents[0]
+                    acc_is_first = False
+                else:
+                    # Should not happen if try_build_from_ops is correct
+                    pass
+
+            idx_expr = "global_col"  # Default
+            if side_input:
+                # Unwrap ShapeOPs (e.g. Expand) to get the underlying data tensor
+                # This allows passing the smaller tensor (e.g. bias vector) to the kernel
+                # instead of the expanded one, enabling efficient broadcasting.
+                while type(side_input).__name__ in ("ShapeOP", "StopGrad"):
+                    side_input = getattr(side_input, "tensor1", side_input)
+
+                side_inputs.append(side_input)
+
+                # Determine index expression based on shape
+                shape = side_input.shape
+                # Simple broadcasting logic for 2D (M, N) output
+                if shape == (M, N):
+                    idx_expr = f"(global_row * {N} + global_col)"
+                elif shape == (1, N) or shape == (N,):
+                    idx_expr = "global_col"
+                elif shape == (M, 1):
+                    idx_expr = "global_row"
+                elif shape == (1, 1) or shape == (1,):
+                    idx_expr = "0"
+                else:
+                    # Fallback to flat index if shapes match flat size?
+                    # Or assume full broadcast if not singleton?
+                    # For safety, default to full index if size matches
+                    if side_input.capacity == M * N:
+                        idx_expr = f"(global_row * {N} + global_col)"
+                    else:
+                        # Hope for the best (likely (N,))
+                        idx_expr = "global_col"
+
+            side_expr = f"{side_input_name}[{idx_expr}]" if side_input else ""
+
+            # Use pattern substitution
+            if op_type in op_map:
+                kernel_enum = op_map[op_type]
+                if kernel_enum in pattern:
+                    snippet = pattern[kernel_enum]
+                    current_code = snippet
+
+                    # Replace operands
+                    if side_input:
+                        if acc_is_first:
+                            current_code = current_code.replace("A[gid]", acc_var)
+                            current_code = current_code.replace("B[gid]", side_expr)
+                        else:
+                            current_code = current_code.replace("A[gid]", side_expr)
+                            current_code = current_code.replace("B[gid]", acc_var)
+                    else:
+                        # Unary
+                        current_code = current_code.replace("A[gid]", acc_var)
+
+                    # Some unary snippets use 'val' rather than A[gid] (e.g. LeakyReLU).
+                    current_code = re.sub(r"\bval\b", acc_var, current_code)
+
+                    # Handle LeakyReLU alpha (constant or scalar side input)
+                    if op_type is LeakyReLU:
+                        if leaky_alpha_expr is not None:
+                            current_code = current_code.replace(
+                                "alpha", leaky_alpha_expr
+                            )
+                        else:
+                            alpha = getattr(op, "alpha", 0.01)
+                            current_code = current_code.replace("alpha", f"{alpha}f")
+
+                    code_lines.append(f"{acc_var} = {current_code};")
+                else:
+                    # Fallback for ops not in pattern (should not happen for supported ops)
+                    print(f"Warning: No pattern found for {op_type}")
+            else:
+                print(f"Warning: Op {op_type} not in op_map")
+
+            prev_op = op
+
+        return "\n        ".join(code_lines), side_inputs
+
+    def convert_kernel(
+        self,
+        ctx: "TensorContext",
+    ) -> tensorops_backend.KernelTensorOps:
+        """
+        Convert to a tiled MatMul with fused epilogue.
+        """
+        anchor = self.anchor
+        M = anchor.tensor1.shape[0]
+        N = anchor.tensor2.shape[1]
+        K = anchor.tensor1.shape[1]
+
+        # Tile size
+        TILE_SIZE = self.tile_size
+        local_mem_size = 2 * TILE_SIZE * TILE_SIZE * 4  # 2 tiles * 4 bytes per float
+
+        # Epilogue code
+        epilogue_code, side_inputs = self.generate_epilogue_code(M, N)
+        if epilogue_code:
+            epilogue_code = "// Epilogue fusion\n        " + epilogue_code
+        else:
+            epilogue_code = ""
+
+        # Get kernel template and replace placeholder
+        template = tensorops_backend.get_kernel_source_by_name("TiledMatMul_16x16")
+
+        # Avoid replacing the comment
+        template = template.replace("// EPILOGUE_PLACEHOLDER", "// PLACEHOLDER_COMMENT")
+
+        # Replace TILE_SIZE definition
+        # Assuming template has #define TILE_SIZE 16
+        custom_src = template.replace(
+            "#define TILE_SIZE 16", f"#define TILE_SIZE {TILE_SIZE}"
+        )
+
+        # Replace kernel name.
+        # Must be globally unique within a compiled OpenCL program; otherwise we can
+        # hit "conflicting types" errors when a predefined MatMul kernel and an
+        # anchored custom MatMul (tile=16) both define TiledMatMul_16x16.
+        kernel_name = f"TiledMatMul_{TILE_SIZE}x{TILE_SIZE}_k{self.kernel_id}"
+        custom_src = custom_src.replace("TiledMatMul_16x16", kernel_name)
+
+        custom_src = custom_src.replace("EPILOGUE_PLACEHOLDER", epilogue_code)
+
+        # Update signature if side inputs exist
+        if side_inputs:
+            new_args = []
+            for i in range(len(side_inputs)):
+                new_args.append(f"__global const float* side_input_{i}")
+
+            # Insert before A_tile to match Rust backend argument order (Inputs -> Local -> Outputs)
+            custom_src = custom_src.replace(
+                "__local float* A_tile", ", ".join(new_args) + ", __local float* A_tile"
+            )
+
+        # Use custom kernel name
+        kernel_type_obj = tensorops_backend.KernelType.custom(kernel_name)
+
+        # Build input list: A, B, then any epilogue deps
+        py_inputs = []
+
+        # A and B tensors
+        actual_t1 = anchor.tensor1
+        while type(actual_t1).__name__ in ("ShapeOP", "StopGrad"):
+            actual_t1 = actual_t1.tensor1
+
+        actual_t2 = anchor.tensor2
+        while type(actual_t2).__name__ in ("ShapeOP", "StopGrad"):
+            actual_t2 = actual_t2.tensor1
+
+        source_kernel_id_t1 = ctx.kernel_lookup.get(actual_t1)
+        source_kernel_id_t2 = ctx.kernel_lookup.get(actual_t2)
+        exec_lim = getattr(ctx, "_exec_lim_kernels", 0)
+
+        if (
+            source_kernel_id_t1 is not None
+            and source_kernel_id_t1 >= exec_lim
+            and source_kernel_id_t1 != self.kernel_id
+        ):
+            py_inputs.append(
+                tensorops_backend.LogicalInputSource(source_kernel_id_t1, 0)
+            )
+        elif (
+            getattr(actual_t1, "_values", None) is not None
+            or getattr(actual_t1, "_flat", None) is not None
+        ):
+            py_inputs.append(actual_t1._get_direct_input())
+        else:
+            raise ValueError("Cannot resolve input tensor for MatMul anchor")
+
+        if (
+            source_kernel_id_t2 is not None
+            and source_kernel_id_t2 >= exec_lim
+            and source_kernel_id_t2 != self.kernel_id
+        ):
+            py_inputs.append(
+                tensorops_backend.LogicalInputSource(source_kernel_id_t2, 0)
+            )
+        elif (
+            getattr(actual_t2, "_values", None) is not None
+            or getattr(actual_t2, "_flat", None) is not None
+        ):
+            py_inputs.append(actual_t2._get_direct_input())
+        else:
+            raise ValueError("Cannot resolve input tensor for MatMul anchor")
+
+        # Dimensions (M, N, K)
+        py_inputs.append(tensorops_backend.DirectInput([float(M)]))
+        py_inputs.append(tensorops_backend.DirectInput([float(N)]))
+        py_inputs.append(tensorops_backend.DirectInput([float(K)]))
+
+        # Add side inputs
+        for inp in side_inputs:
+            source_kernel_id = ctx.kernel_lookup.get(inp)
+            if (
+                source_kernel_id is not None
+                and source_kernel_id >= exec_lim
+                and source_kernel_id != self.kernel_id
+            ):
+                py_inputs.append(
+                    tensorops_backend.LogicalInputSource(source_kernel_id, 0)
+                )
+            elif (
+                getattr(inp, "_values", None) is not None
+                or getattr(inp, "_flat", None) is not None
+            ):
+                py_inputs.append(inp._get_direct_input())
+            else:
+                raise ValueError("Cannot resolve side input tensor for MatMul epilogue")
+
+        # Create KernelTensorOps with 2D workgroup
+        M_blocks = (M + TILE_SIZE - 1) // TILE_SIZE
+        N_blocks = (N + TILE_SIZE - 1) // TILE_SIZE
+        global_x = M_blocks * TILE_SIZE
+        global_y = N_blocks * TILE_SIZE
+
+        kernel_obj = tensorops_backend.KernelTensorOps(
+            kernel_type=kernel_type_obj,
+            kernel_id=self.kernel_id,
+            num_output_bufs=1,
+            custom_kernel_src=custom_src,
+            inputs=py_inputs,
+            scalar_inputs=None,
+            # IMPORTANT: runtime otherwise infers output size from the largest input buffer.
+            # For MatMul, that would be len(A) which is wrong; output is M*N.
+            work_size_override=int(M * N),
+            global_work_size_2d=(global_x, global_y),
+            local_work_size=(TILE_SIZE, TILE_SIZE),
+        )
+
+        return kernel_obj
 
 
 class Kernel:
@@ -198,7 +587,7 @@ class Kernel:
 
             rank = len(tgt_shape)
             kernel_name = f"VecPermute_r{rank}"
-            template = tensorops_backend.get_kernel_source_by_name("VecExpandTemplate")
+            template = tensorops_backend.get_kernel_source_by_name("VecPermuteTemplate")
 
             custom_src_for_rust = re.sub(
                 r"#define\s+RANK\s+\d+",
@@ -207,7 +596,7 @@ class Kernel:
                 count=1,
             )
             custom_src_for_rust = re.sub(
-                r"__kernel\s+void\s+VecExpandTemplate",
+                r"__kernel\s+void\s+VecPermuteTemplate",
                 f"__kernel void {kernel_name}",
                 custom_src_for_rust,
                 count=1,
@@ -392,8 +781,17 @@ class Kernel:
                         host_flat if host_flat is not None else host_values
                     )
                 )
-            # Note: For ExpandOP, if parent is in same kernel (which shouldn't happen),
-            # we silently skip adding it rather than raising an error
+            else:
+                # ExpandOP must always receive its data input as the first kernel arg.
+                # If we can't reference it via LogicalInputSource and it's not already
+                # host-resident, force materialization and pass it as DirectInput.
+                try:
+                    _ = actual_parent.values
+                    py_inputs.append(actual_parent._get_direct_input())
+                except Exception as e:
+                    raise Exception(
+                        f"ExpandOP parent could not be resolved for kernel input: {_describe_tensor(actual_parent)}; materialization failed: {e}"
+                    )
 
             # Small metadata buffers (floats; cast to int in kernel)
             py_inputs.append(
@@ -464,15 +862,9 @@ class Kernel:
                             actual_parent
                         )
                     if source_output_idx is None:
-                        source_kernel_op_list = ctx.kernels[source_kernel_id]
-                        try:
-                            source_output_idx = source_kernel_op_list.index(
-                                actual_parent
-                            )
-                        except ValueError:
-                            raise Exception(
-                                "MatMul parent not found in producing kernel"
-                            )
+                        raise Exception(
+                            f"MatMul parent {actual_parent} is not available as an output of kernel {source_kernel_id} (likely fused)."
+                        )
                     py_inputs.append(
                         tensorops_backend.LogicalInputSource(
                             source_kernel_id, source_output_idx
@@ -497,6 +889,13 @@ class Kernel:
             py_inputs.append(tensorops_backend.DirectInput([float(N)]))
             py_inputs.append(tensorops_backend.DirectInput([float(K)]))
 
+            # Launch as a 2D tiled kernel (same convention as AnchoredKernel).
+            TILE_SIZE = 16
+            M_blocks = (M + TILE_SIZE - 1) // TILE_SIZE
+            N_blocks = (N + TILE_SIZE - 1) // TILE_SIZE
+            global_x = int(M_blocks * TILE_SIZE)
+            global_y = int(N_blocks * TILE_SIZE)
+
             return tensorops_backend.KernelTensorOps(
                 kernel_type=kernel_type_obj,
                 kernel_id=self.kernel_id,
@@ -505,6 +904,8 @@ class Kernel:
                 inputs=py_inputs,
                 scalar_inputs=None,
                 work_size_override=int(tgt_size),
+                global_work_size_2d=(global_x, global_y),
+                local_work_size=(TILE_SIZE, TILE_SIZE),
             )
 
         is_predefined = len(self.op) == 1
@@ -602,19 +1003,9 @@ class Kernel:
                         actual_op_for_lookup
                     )
                 if source_output_idx is None:
-                    source_kernel_op_list = ctx.kernels[source_kernel_id]
-                    try:
-                        source_output_idx = source_kernel_op_list.index(
-                            actual_op_for_lookup
-                        )
-                    except ValueError:
-                        print(
-                            f"Error details: actual_op_for_lookup={actual_op_for_lookup}, type={type(actual_op_for_lookup)}, source_kernel_id={source_kernel_id}, source_kernel_op_list={[str(o) for o in source_kernel_op_list]}"
-                        )
-                        raise Exception(
-                            f"Parent OP {actual_op_for_lookup} (logical input to kernel {self.kernel_id}) "
-                            f"not found in its own producing kernel's op list (kernel {source_kernel_id})."
-                        )
+                    raise Exception(
+                        f"Parent OP {actual_op_for_lookup} is not available as an output of kernel {source_kernel_id} (likely fused)."
+                    )
                 py_inputs.append(
                     tensorops_backend.LogicalInputSource(
                         source_kernel_id, source_output_idx
@@ -625,19 +1016,13 @@ class Kernel:
                 or getattr(actual_op_for_lookup, "_flat", None) is not None
             ):
                 # Use host data only if it is already present; do not trigger lazy materialization.
-                host_flat = getattr(actual_op_for_lookup, "_flat", None)
-                host_values = getattr(actual_op_for_lookup, "_values", None)
-                py_inputs.append(
-                    tensorops_backend.DirectInput(
-                        host_flat if host_flat is not None else host_values
-                    )
-                )
+                py_inputs.append(actual_op_for_lookup._get_direct_input())
             else:
                 # As a fallback (common in backward passes), force materialization
                 # of the producer's host values and pass them as DirectInput.
                 try:
-                    vals = actual_op_for_lookup.values
-                    py_inputs.append(tensorops_backend.DirectInput(vals))
+                    _ = actual_op_for_lookup.values
+                    py_inputs.append(actual_op_for_lookup._get_direct_input())
                 except Exception as e:
                     raise Exception(
                         f"Logical input {actual_op_for_lookup} (kernel {self.kernel_id}) not found in kernel_lookup and has no host values; materialization failed: {e}"
@@ -759,7 +1144,11 @@ class Fusor:
                 pid = id(parent)
                 # Unwrap ShapeOP to get the actual producer
                 actual_parent = parent
-                while type(actual_parent).__name__ == "ShapeOP":
+                # Treat view/pass-through ops as transparent when resolving producers.
+                # StopGrad is used by CrossEntropyLoss (detach max logits). If we don't
+                # unwrap it here, fusion can incorrectly treat an internal producer as an
+                # external input, generating wrong reads and NaNs.
+                while type(actual_parent).__name__ in ("ShapeOP", "StopGrad"):
                     actual_parent = getattr(actual_parent, "tensor1", actual_parent)
                 actual_pid = id(actual_parent)
 
@@ -770,7 +1159,13 @@ class Fusor:
                     else:
                         parent_exprs.append(f"{op_output_buffer_map[actual_pid]}[gid]")
                 else:
-                    parent_exprs.append(f"{input_vars_map[pid]}[gid]")
+                    # Decide scalar vs vector by Python-side length for external inputs
+                    try:
+                        is_scalar = len(parent) == 1
+                    except Exception:
+                        is_scalar = False
+                    idx = "[0]" if is_scalar else "[gid]"
+                    parent_exprs.append(f"{input_vars_map[pid]}{idx}")
 
             # Substitute placeholders like A[gid], B[gid] according to parent order.
             raw_placeholders = re.findall(r"\b([a-zA-Z_]+)\[gid\]", expr)
@@ -897,5 +1292,5 @@ class Fusor:
         )
 
         # if DEBUG_FUSION_KERNEL_SRC:
-        print(self.kernel_instructions)
+        # print(self.kernel_instructions)
         return self.kernel_instructions, self.kernel_name

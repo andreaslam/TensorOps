@@ -9,7 +9,7 @@ from urllib.request import urlretrieve
 
 from tensorops.loss import CrossEntropyLoss
 from tensorops.optim import AdamW
-from tensorops.tensor import LeakyReLU, Tensor, TensorContext
+from tensorops.tensor import Tanh, Tensor, TensorContext
 from tensorops.utils.models import SequentialModel
 from tensorops.utils.tensorutils import PlotterUtil
 
@@ -38,7 +38,8 @@ def download_mnist():
 def extract_images(filepath):
     """Extract images from the .gz file and return them as a list of lists."""
     with gzip.open(filepath, "rb") as f:
-        magic_number, num_images, rows, cols = struct.unpack(">IIII", f.read(16))
+        header = f.read(16)
+        magic_number, num_images, rows, cols = struct.unpack(">IIII", header)
         assert magic_number == 2051, (
             f"Invalid magic number {magic_number} in image file."
         )
@@ -46,8 +47,8 @@ def extract_images(filepath):
         images = []
         for _ in range(num_images):
             image = list(f.read(rows * cols))
-            # Normalize to [0, 1]
-            image = [x / 255.0 for x in image]
+            # Normalize to mean 0, std 1 (approx)
+            image = [(x / 255.0 - 0.1307) / 0.3081 for x in image]
             images.append(image)
         return images
 
@@ -55,7 +56,8 @@ def extract_images(filepath):
 def extract_labels(filepath):
     """Extract labels from the .gz file and return them as a list."""
     with gzip.open(filepath, "rb") as f:
-        magic_number, num_labels = struct.unpack(">II", f.read(8))
+        header = f.read(8)
+        magic_number, num_labels = struct.unpack(">II", header)
         assert magic_number == 2049, (
             f"Invalid magic number {magic_number} in label file."
         )
@@ -91,7 +93,7 @@ class MNISTModel(SequentialModel):
         num_hidden_nodes: int,
         loss_criterion,
         seed: int | None = None,
-        activation_function=LeakyReLU,
+        activation_function=Tanh,
         *,
         batch_size: int = 1,
     ) -> None:
@@ -106,11 +108,12 @@ class MNISTModel(SequentialModel):
                 )
             # Final layer emits logits; softmax is handled inside CrossEntropyLoss.
             self.add_layer(num_hidden_nodes, 10, None)
+            # CrossEntropyLoss expects (logits, target).
             self.loss = self.loss_criterion(
-                self.targets, self.model_output_layer.layer_output
+                self.model_output_layer.layer_output, self.targets
             )
 
-    def forward(self, model_inputs: Tensor) -> Tensor:
+    def forward(self, model_inputs: Tensor) -> Tensor:  # type: ignore[override]
         with self.context:
             # Input must be (batch_size, 784) for this model.
             for layer in self.model_layers:
@@ -130,25 +133,49 @@ with TensorContext() as tc:
     print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
 
     # impl model
-    BATCH_SIZE = 256
+    BATCH_SIZE = 32
     N_EPOCHS = 100
 
-    model = MNISTModel(2, 256, CrossEntropyLoss(), seed=42, batch_size=BATCH_SIZE)
-    optim = AdamW(model.get_weights(), lr=1e-4)
+    model = MNISTModel(
+        1,
+        128,
+        CrossEntropyLoss(),
+        seed=42,
+        batch_size=BATCH_SIZE,
+        activation_function=Tanh,
+    )
+    optim = AdamW(model.get_weights(), lr=1e-4, weight_decay=1e-4)
     # Enable gradient clipping to stabilise updates
-    optim.grad_clip_norm = 1.0
+    optim.grad_clip_norm = 0.5
+    optim.grad_clip_value = 0.5
     model.train()
 
     loss_plot = PlotterUtil()
 
     # Helper to create fixed-size batches (graph uses a fixed batch_size)
     def _one_hot(label: int, num_classes: int = 10) -> list[float]:
-        v = [0.0] * num_classes
-        v[int(label)] = 1.0
-        return v
+        vec = [0.0] * num_classes
+        vec[int(label)] = 1.0
+        return vec
+
+    def _has_nonfinite_grad(params: list[Tensor]) -> bool:
+        import numpy as np
+
+        for p in params:
+            g = getattr(p, "grads", None)
+            if g is None:
+                continue
+            src = g.flat if getattr(g, "flat", None) is not None else g.values
+            if src is None:
+                continue
+            arr = np.array(src, dtype=float)
+            if not np.isfinite(arr).all():
+                return True
+        return False
 
     def get_batches(images: Tensor, labels: Tensor, batch_size: int):
         """Yield full (batch_size, 784) images and (batch_size, 10) one-hot labels."""
+        assert images.values is not None and labels.values is not None
         n_samples = len(images.values)
         indices = list(range(n_samples))
         random.shuffle(indices)
@@ -157,7 +184,7 @@ with TensorContext() as tc:
         for start_idx in range(0, n_samples - batch_size + 1, batch_size):
             batch_indices = indices[start_idx : start_idx + batch_size]
             batch_images = [images.values[i] for i in batch_indices]
-            batch_labels = [_one_hot(labels.values[i]) for i in batch_indices]
+            batch_labels = [_one_hot(int(labels.values[i])) for i in batch_indices]
             yield (
                 Tensor(batch_images, requires_grad=False),
                 Tensor(batch_labels, requires_grad=False),
@@ -170,13 +197,60 @@ with TensorContext() as tc:
         for X_batch, y_batch in get_batches(X_train, y_train, BATCH_SIZE):
             model.zero_grad()
 
-            logits = model(X_batch, execute=True)
-            loss = model.calculate_loss(logits, y_batch)
+            # Wire inputs/targets into the existing graph without creating new ops
+            logits = model(X_batch, execute=False)
+            assert model.targets is not None
+            model.targets.values = y_batch.values
+
+            # Re-run the fixed graph with updated data
+            model.context.forward(recompute=True)
+
+            # Debug logits and guard against non-finite values
+            vals = logits.flat
+            import numpy as np
+
+            v = np.array(vals)
+            print(f"Logits: min={v.min()}, max={v.max()}, mean={v.mean()}")
+            if not np.isfinite(v).all():
+                print("Skipping batch due to non-finite logits")
+                continue
+
+            # Loss is part of the pre-built graph; reuse it to avoid graph bloat
+            loss = model.loss
 
             model.backward()
+
+            # Skip update if loss blew up or produced bad grads
+            loss_val = loss.item()
+            if not np.isfinite(loss_val):
+                print("Skipping batch due to non-finite loss")
+                model.zero_grad()
+                continue
+
+            if _has_nonfinite_grad(model.get_weights()):
+                print("Skipping batch due to non-finite gradients")
+                model.zero_grad()
+                continue
+
             optim.step()
 
-            batch_loss = loss.item()
+            # Clip weights in-place to keep logits bounded
+            for p in model.get_weights():
+                src = p.flat if getattr(p, "flat", None) is not None else p.values
+                if src is None:
+                    continue
+                # Handle NaNs in weights by resetting to 0.0 or small random values
+                # (If weights are NaN, the model is broken, but we try to recover)
+                clipped = []
+                for x in src:
+                    val = float(x)
+                    if not np.isfinite(val):
+                        clipped.append(0.0)
+                    else:
+                        clipped.append(max(-0.5, min(0.5, val)))
+                p.values = clipped
+
+            batch_loss = loss_val
             epoch_loss += batch_loss
             print(f"Batch loss: {batch_loss:.4f}")
             n_batches += 1

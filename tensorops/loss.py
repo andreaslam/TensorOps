@@ -219,6 +219,14 @@ class CrossEntropyLoss(Loss):
 
         # Stable log-softmax: subtract row-wise max before exponentiating.
         # Use Max OP for autograd support (not .max() which materializes immediately)
+
+        # Debug
+        if logits.flat is not None:
+            import numpy as np
+
+            v = np.array(logits.flat)
+            print(f"Loss Logits: min={v.min()}, max={v.max()}, mean={v.mean()}")
+
         from tensorops.tensor import Max
 
         max_logits = Max(logits, axis=1)

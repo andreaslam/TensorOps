@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import pickle
 from abc import ABC, abstractmethod
 from functools import reduce
@@ -37,6 +38,7 @@ class Tensor(ABC):
         # user decides whether the tensor can be fused or not, for example, if the user wants to see the value of a tensor, since the value of the tensor might not be guaranteed to be present due to kernel fusion not returning intermediate results. this guarantees that the tensor value is returned
         self.available_during_exec = False
         self.memview = None
+        self._direct_input = None
         self._shape = None  # Initialize _shape early to avoid AttributeError
         if values is not None:
             if isinstance(values, (float, int)):
@@ -62,8 +64,11 @@ class Tensor(ABC):
                 self.memview = self._values
                 self._flat = memoryview(self.memview).cast("f")
             else:
-                self.memview, self._shape = tensorops_backend.tensor_from_list(
+                self.memview, inferred_shape = tensorops_backend.tensor_from_list(
                     self._values
+                )
+                self._shape = (
+                    tuple(inferred_shape) if inferred_shape is not None else None
                 )
                 self._flat = memoryview(self.memview).cast("f")
         else:
@@ -78,6 +83,24 @@ class Tensor(ABC):
         self._pending_kernel_result = None
         self._pending_kernel_op_index = None
         self._pending_ctx = None
+
+    def _get_direct_input(self):
+        """Return a cached `tensorops_backend.DirectInput` for this tensor.
+
+        Creating DirectInput copies the whole buffer into a Rust Vec<f32>.
+        In tight recompute loops where kernels are rebuilt each iteration,
+        caching avoids repeatedly copying the same large inputs.
+        """
+
+        if self._direct_input is not None:
+            return self._direct_input
+
+        data = self._flat if self._flat is not None else self._values
+        if data is None:
+            raise ValueError("Cannot create DirectInput for tensor with no host data")
+
+        self._direct_input = tensorops_backend.DirectInput(data)
+        return self._direct_input
 
     @property
     def flat(self):
@@ -129,6 +152,8 @@ class Tensor(ABC):
 
     @values.setter
     def values(self, new_value):
+        # Any value assignment invalidates cached DirectInput.
+        self._direct_input = None
         if new_value is None:
             self._values = None
             self._flat = None
@@ -226,11 +251,11 @@ class Tensor(ABC):
     def shape(self, new_shape):
         if new_shape and self.shape:
             _ = _check_shape(self.shape, new_shape)
-        self._shape = new_shape
+        self._shape = tuple(new_shape) if new_shape is not None else None
         # Capacity must always match the shape's total element count.
         # Keeping a stale capacity causes subtle bugs (e.g. batched tensors
         # reporting the wrong flattened length during forward/backward).
-        self.capacity = reduce(mul, new_shape, 1) if new_shape is not None else None
+        self.capacity = reduce(mul, self._shape, 1) if self._shape is not None else None
 
     def _alloc_zero_grads(self) -> Tensor:
         cap = self.capacity
@@ -361,14 +386,76 @@ class Tensor(ABC):
 
         data = self.flat if self.flat is not None else self.values
         if data is None:
-            raise ValueError("Cannot expand a tensor without values")
+            raise ValueError("Cannot expand tensor without values")
 
-        # Rust backend path
-        if hasattr(tensorops_backend, "tensor_expand"):
-            new_values = tensorops_backend.tensor_expand(  # type: ignore[attr-defined]
-                list(data), list(current_shape), list(shape)
+        # Fast path: run OpenCL expand kernel directly when not building a graph.
+        # This avoids the CPU tensor_expand helper (and its host-side loops).
+        try:
+            template = tensorops_backend.get_kernel_source_by_name("VecExpandTemplate")
+        except Exception:
+            template = None
+
+        if template:
+            # Build row-major strides
+            src_shape = list(current_shape)
+            tgt_shape = list(shape)
+
+            src_strides = [1] * len(src_shape)
+            stride = 1
+            for i in range(len(src_shape) - 1, -1, -1):
+                src_strides[i] = stride
+                stride *= int(src_shape[i])
+
+            tgt_strides = [1] * len(tgt_shape)
+            stride = 1
+            for i in range(len(tgt_shape) - 1, -1, -1):
+                tgt_strides[i] = stride
+                stride *= int(tgt_shape[i])
+
+            rank = len(tgt_shape)
+            kernel_name = f"VecExpand_r{rank}"
+
+            import re
+
+            custom_src = re.sub(
+                r"#define\s+RANK\s+\d+",
+                f"#define RANK {rank}",
+                template,
+                count=1,
             )
-            return Tensor(new_values, requires_grad=self.requires_grad).reshape(shape)
+            custom_src = re.sub(
+                r"__kernel\s+void\s+VecExpandTemplate",
+                f"__kernel void {kernel_name}",
+                custom_src,
+                count=1,
+            )
+
+            # Prefer passing a buffer-like object into DirectInput to hit the fast
+            # buffer-protocol path in the Rust extension.
+            src_buf = data
+            if isinstance(src_buf, (bytearray, bytes)):
+                src_buf = memoryview(src_buf).cast("f")
+
+            k = tensorops_backend.KernelTensorOps(
+                kernel_type=tensorops_backend.KernelType.custom(kernel_name),
+                kernel_id=0,
+                num_output_bufs=1,
+                custom_kernel_src=custom_src,
+                inputs=[
+                    tensorops_backend.DirectInput(src_buf),
+                    tensorops_backend.DirectInput([float(x) for x in src_shape]),
+                    tensorops_backend.DirectInput([float(x) for x in src_strides]),
+                    tensorops_backend.DirectInput([float(x) for x in tgt_shape]),
+                    tensorops_backend.DirectInput([float(x) for x in tgt_strides]),
+                ],
+                scalar_inputs=None,
+                work_size_override=int(reduce(mul, tgt_shape, 1)),
+            )
+            res = rt.execute_graph([k])
+            out_bytes = res[0].val[0]
+            out = Tensor(out_bytes, requires_grad=self.requires_grad)
+            out.shape = tuple(tgt_shape)
+            return out
 
         # Fallback Python implementation
         new_capacity = reduce(mul, shape, 1)
@@ -434,31 +521,55 @@ class Tensor(ABC):
         self.shape = (self.capacity,)
 
     def __add__(self, other) -> Add:
-        return Add(self, other if isinstance(other, Tensor) else Tensor(other))
+        return Add(
+            self,
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+        )
 
     def __radd__(self, other) -> Add:
-        return Add(other if isinstance(other, Tensor) else Tensor(other), self)
+        return Add(
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+            self,
+        )
 
     def __sub__(self, other) -> Sub:
-        return Sub(self, other if isinstance(other, Tensor) else Tensor(other))
+        return Sub(
+            self,
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+        )
 
     def __rsub__(self, other) -> Sub:
-        return Sub(other if isinstance(other, Tensor) else Tensor(other), self)
+        return Sub(
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+            self,
+        )
 
     def __mul__(self, other) -> ElementMul:
-        return ElementMul(self, other if isinstance(other, Tensor) else Tensor(other))
+        return ElementMul(
+            self,
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+        )
 
     def __rmul__(self, other) -> ElementMul:
-        return ElementMul(other if isinstance(other, Tensor) else Tensor(other), self)
+        return ElementMul(
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+            self,
+        )
 
     def __neg__(self) -> ElementMul:
         return ElementMul(self, Tensor(-1, requires_grad=False))
 
     def __truediv__(self, other) -> Div:
-        return Div(self, other if isinstance(other, Tensor) else Tensor(other))
+        return Div(
+            self,
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+        )
 
     def __rtruediv__(self, other) -> Div:
-        return Div(other if isinstance(other, Tensor) else Tensor(other), self)
+        return Div(
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+            self,
+        )
 
     def __matmul__(self, other) -> Tensor:
         other = other if isinstance(other, Tensor) else Tensor(other)
@@ -524,10 +635,16 @@ class Tensor(ABC):
         return other.__matmul__(self)
 
     def __pow__(self, other) -> Pow:
-        return Pow(self, other if isinstance(other, Tensor) else Tensor(other))
+        return Pow(
+            self,
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+        )
 
     def __rpow__(self, other) -> Pow:
-        return Pow(other if isinstance(other, Tensor) else Tensor(other), self)
+        return Pow(
+            other if isinstance(other, Tensor) else Tensor(other, requires_grad=False),
+            self,
+        )
 
     def exp(self) -> Pow:
         return Pow(Tensor(math.e, requires_grad=False), self)
@@ -575,9 +692,35 @@ class Tensor(ABC):
                     f"Cannot seed gradient, the tensor must not be empty! {self}"
                 )
             cap = len(vals)
-        self.grads = Tensor([seed] * cap, requires_grad=False, grad_tensor=True)
-        if self.shape is not None:
-            self.grads.shape = self.shape
+
+        target_shape = tuple(self.shape) if self.shape is not None else (int(cap),)
+        cap = int(cap)
+
+        # Reuse existing grad tensor if it's already the right constant.
+        if (
+            self.grads is not None
+            and getattr(self.grads, "capacity", None) == cap
+            and getattr(self.grads, "shape", None) == target_shape
+            and getattr(self.grads, "_seed_value", None) == seed
+        ):
+            return
+
+        # Context-level cache to reuse large constant seed buffers across backward() calls.
+        ctx = TensorContext.current_context
+        cache = getattr(ctx, "_seed_grad_cache", None) if ctx is not None else None
+        cache_key = (seed, target_shape)
+        if cache is not None and cache_key in cache:
+            self.grads = cache[cache_key]
+            return
+
+        # Fast path: allocate the constant buffer in Rust (no Python list, no recursive flatten).
+        memview, _ = tensorops_backend.tensor_full(float(seed), list(target_shape))
+        grad_t = Tensor(memview, requires_grad=False, grad_tensor=True)
+        grad_t.shape = target_shape
+        grad_t._seed_value = seed
+        self.grads = grad_t
+        if cache is not None:
+            cache[cache_key] = grad_t
 
     def squeeze(self):
         assert self.shape[0] == 1, f"Cannot squeeze tensor shaped {self.shape}"
@@ -889,23 +1032,18 @@ class Max(ReduceOP):
         expanded_grads = self._expanded_output_grads_to_input()
 
         # Build a mask where input equals the reduced max value.
-        mask_flat = [0.0] * self.tensor1.capacity
-        x = self.tensor1.flat
-        # Output is laid out as [pre_axis, post_axis]
-        for pre in range(self.pre_axis):
-            for post in range(self.post_axis):
-                base = (pre * self.axis_len) * self.post_axis + post
-                best = x[base]
-                for k in range(1, self.axis_len):
-                    v = x[base + k * self.post_axis]
-                    if v > best:
-                        best = v
-                for k in range(self.axis_len):
-                    idx = base + k * self.post_axis
-                    if x[idx] == best:
-                        mask_flat[idx] = 1.0
+        import numpy as np
 
-        mask = Tensor(mask_flat, requires_grad=False).reshape(self.tensor1.shape)
+        x = np.array(self.tensor1.flat).reshape(self.tensor1.shape)
+        m = np.array(self.values).reshape(self.shape)
+
+        # Expand m to match x's rank for comparison
+        m_expanded = np.expand_dims(m, self.axis)
+        mask_arr = (x == m_expanded).astype(np.float32)
+
+        mask = Tensor(mask_arr.flatten().tolist(), requires_grad=False).reshape(
+            self.tensor1.shape
+        )
         self.tensor1.add_grad(expanded_grads * mask)
 
 
@@ -922,23 +1060,17 @@ class Min(ReduceOP):
 
         expanded_grads = self._expanded_output_grads_to_input()
 
-        # Build a mask where input equals the reduced min value.
-        mask_flat = [0.0] * self.tensor1.capacity
-        x = self.tensor1.flat
-        for pre in range(self.pre_axis):
-            for post in range(self.post_axis):
-                base = (pre * self.axis_len) * self.post_axis + post
-                best = x[base]
-                for k in range(1, self.axis_len):
-                    v = x[base + k * self.post_axis]
-                    if v < best:
-                        best = v
-                for k in range(self.axis_len):
-                    idx = base + k * self.post_axis
-                    if x[idx] == best:
-                        mask_flat[idx] = 1.0
+        import numpy as np
 
-        mask = Tensor(mask_flat, requires_grad=False).reshape(self.tensor1.shape)
+        x = np.array(self.tensor1.flat).reshape(self.tensor1.shape)
+        m = np.array(self.values).reshape(self.shape)
+
+        m_expanded = np.expand_dims(m, self.axis)
+        mask_arr = (x == m_expanded).astype(np.float32)
+
+        mask = Tensor(mask_arr.flatten().tolist(), requires_grad=False).reshape(
+            self.tensor1.shape
+        )
         self.tensor1.add_grad(expanded_grads * mask)
 
 
@@ -964,6 +1096,13 @@ class BinaryOP(OP):
             f"Tensor lengths must match! Got {t1_len} and {t2_len}"
         )
 
+        # The current Fusor does not support scalar-broadcast indexing for external
+        # inputs (len-1 tensors). Fusing such ops would generate `v_in[gid]` reads
+        # and can go out-of-bounds, producing NaNs. Keep scalar-broadcast binary ops
+        # as standalone predefined kernels (runtime passes lens as scalar args).
+        if self.broadcast:
+            self.fusable_op = False
+
         if original_shape1 != original_shape2:
             self.shape = self.tensor1.shape
         else:
@@ -984,8 +1123,10 @@ class Add(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.add_grad(self.grads)
-        self.tensor2.add_grad(self.grads)
+        if self.tensor1.requires_grad:
+            self.tensor1.add_grad(self.grads)
+        if self.tensor2.requires_grad:
+            self.tensor2.add_grad(self.grads)
 
 
 class Sub(BinaryOP):
@@ -993,8 +1134,10 @@ class Sub(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.add_grad(self.grads)
-        self.tensor2.add_grad(self.grads * -1)
+        if self.tensor1.requires_grad:
+            self.tensor1.add_grad(self.grads)
+        if self.tensor2.requires_grad:
+            self.tensor2.add_grad(self.grads * -1)
 
 
 class ElementMul(BinaryOP):
@@ -1002,8 +1145,10 @@ class ElementMul(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.add_grad(self.grads * self.tensor2)
-        self.tensor2.add_grad(self.grads * self.tensor1)
+        if self.tensor1.requires_grad:
+            self.tensor1.add_grad(self.grads * self.tensor2)
+        if self.tensor2.requires_grad:
+            self.tensor2.add_grad(self.grads * self.tensor1)
 
 
 class Div(BinaryOP):
@@ -1011,22 +1156,28 @@ class Div(BinaryOP):
         super().__init__(tensor1, tensor2)
 
     def get_grad(self) -> None:
-        self.tensor1.add_grad(self.grads * 1 / self.tensor2)
-        self.tensor2.add_grad(self.grads * -self.tensor1 / (self.tensor2**2))
+        if self.tensor1.requires_grad:
+            self.tensor1.add_grad(self.grads * 1 / self.tensor2)
+        if self.tensor2.requires_grad:
+            self.tensor2.add_grad(self.grads * -self.tensor1 / (self.tensor2**2))
 
 
 class Pow(BinaryOP):
     def __init__(self, tensor1, tensor2) -> None:
         super().__init__(tensor1, tensor2)
-        # Pow requires special kernel handling for scalar broadcasting; disable fusion
+        # Pow requires special kernel handling (e.g. scalar base broadcasting via
+        # base_len) which the generic Fusor does not model.
+        self.fusable_op = False
 
     def get_grad(self):
-        self.tensor1.add_grad(
-            self.grads * self.tensor2 * (self.tensor1 ** (self.tensor2 - 1))
-        )
-        self.tensor2.add_grad(
-            self.grads * ((self.tensor1**self.tensor2) * self.tensor1.log())
-        )
+        if self.tensor1.requires_grad:
+            self.tensor1.add_grad(
+                self.grads * self.tensor2 * (self.tensor1 ** (self.tensor2 - 1))
+            )
+        if self.tensor2.requires_grad:
+            self.tensor2.add_grad(
+                self.grads * ((self.tensor1**self.tensor2) * self.tensor1.log())
+            )
 
 
 class GenericLog(BinaryOP):
@@ -1039,13 +1190,19 @@ class GenericLog(BinaryOP):
         super().__init__(tensor1, tensor2)
         self.base_value = self.tensor1
         self.scalar_operands = [self.base_value]
+        # VecLog takes a scalar base argument; keep it out of fusion.
+        self.fusable_op = False
 
     def get_grad(self):
-        self.tensor1.add_grad(
-            self.grads
-            * (-(self.tensor2.log() / (self.tensor1 * ((self.tensor1.log()) ** 2))))
-        )
-        self.tensor2.add_grad(self.grads * (1 / (self.tensor2 * self.tensor1.log())))
+        if self.tensor1.requires_grad:
+            self.tensor1.add_grad(
+                self.grads
+                * (-(self.tensor2.log() / (self.tensor1 * ((self.tensor1.log()) ** 2))))
+            )
+        if self.tensor2.requires_grad:
+            self.tensor2.add_grad(
+                self.grads * (1 / (self.tensor2 * self.tensor1.log()))
+            )
 
 
 class UnaryOP(OP):
@@ -1146,14 +1303,28 @@ class LeakyReLU(OP):
             _ = self.tensor1.values
             flat_vals = self.tensor1.flat
 
-        if flat_vals is None or flat_vals == []:
-            raise ValueError("LeakyReLU backward requires forward input values")
-
         alpha = (
             self.leaky_grad.flat[0]
             if self.leaky_grad.flat is not None
             else float(self.leaky_grad.values[0])
         )
+
+        # If the pre-activation input was fused into an epilogue (e.g. MatMul+Bias+LeakyReLU),
+        # `self.tensor1` may have no standalone buffer to materialize.
+        # For alpha > 0, the sign of the LeakyReLU output matches the sign of the input,
+        # so we can compute the gradient mask from the output instead.
+        if flat_vals is None or flat_vals == []:
+            if alpha <= 0.0:
+                raise ValueError(
+                    "LeakyReLU backward requires forward input values when alpha <= 0"
+                )
+            out_flat = self.flat
+            if (out_flat is None or out_flat == []) and self.capacity:
+                _ = self.values
+                out_flat = self.flat
+            if out_flat is None or out_flat == []:
+                raise ValueError("LeakyReLU backward requires forward values")
+            flat_vals = out_flat
 
         # d/dx leaky_relu(x) = 1 if x>0 else alpha
         scale = [1.0 if v > 0.0 else alpha for v in flat_vals]
@@ -1256,6 +1427,10 @@ class TensorContext:
         # This avoids repeated expensive Rust->Python conversions for fused kernels.
         self._kernel_val_cache = {}
 
+        # Cache constant seed grad tensors (e.g. ones_like(output)).
+        # Keyed by (seed, shape_tuple).
+        self._seed_grad_cache = {}
+
         # Kernel output index lookup built during finalise().
         self._kernel_output_index = []
 
@@ -1280,6 +1455,11 @@ class TensorContext:
         else:
             self.ops = []
         self.operands = []
+
+        # Reset caches (safe default; forward/backward tight loops typically use
+        # reset_execution_state(), not reset()).
+        self._kernel_val_cache = {}
+        self._seed_grad_cache = {}
 
         self.kernel_lookup = {}
         self.kernel_dependencies = {}
@@ -1392,18 +1572,18 @@ class TensorContext:
         pass
 
     def finalise(self, lim=0, lim_kernels=0):
-        from tensorops.backend import Fusor, Kernel
+        from tensorops.backend import AnchoredKernel, Fusor, Kernel
 
         def _unwrap_shapeop_parent(p):
             # ShapeOP is metadata-only; treat it as transparent for dependency tracking.
-            while type(p).__name__ == "ShapeOP":
+            while isinstance(p, ShapeOP) or type(p).__name__ == "StopGrad":
                 p = getattr(p, "tensor1", p)
             return p
 
         for op in self.ops[lim:]:
             # ShapeOP/StopGrad are view/pass-through ops. They have no kernel and should not
             # create a "locked" fusion boundary. Map to underlying producer kernel and skip.
-            if type(op).__name__ in ("ShapeOP", "StopGrad"):
+            if isinstance(op, ShapeOP) or type(op).__name__ == "StopGrad":
                 parent = getattr(op, "tensor1", None)
                 parent = _unwrap_shapeop_parent(parent)
                 if isinstance(parent, OP) and parent in self.kernel_lookup:
@@ -1437,6 +1617,38 @@ class TensorContext:
                     )
                     parents_found_in_kernels = False
                     break
+
+            # Check for MatMul epilogue fusion
+            # We can only fuse into the latest kernel to avoid dependency issues (cannot depend on future kernels)
+            is_matmul_epilogue = False
+            target_kernel_idx = None
+
+            if parent_kernel_indices:
+                max_kernel_idx = max(parent_kernel_indices)
+                if max_kernel_idx in self.locked_kernels:
+                    kops = self.kernels[max_kernel_idx]
+                    if type(kops[0]).__name__ == "MatMul":
+                        op_name = type(op).__name__
+                        if False and op_name in (
+                            "Add",
+                            "Sub",
+                            "ElementMul",
+                            "Div",
+                            "Sin",
+                            "Cos",
+                            "Tanh",
+                            "LeakyReLU",
+                            "Pow",
+                            "GenericLog",
+                        ):
+                            target_kernel_idx = max_kernel_idx
+                            is_matmul_epilogue = True
+
+            if is_matmul_epilogue:
+                self.kernels[target_kernel_idx].append(op)
+                self.kernel_lookup[op] = target_kernel_idx
+                op.available_during_exec = True
+                continue
 
             # 1. new kernel: If no OP parents OR parents belong to >1 kernel OR a parent wasn't tracked OR operation explicitly disables fusion
             if (
@@ -1494,13 +1706,24 @@ class TensorContext:
                 op.available_during_exec = True
                 self.kernel_number += 1
 
-        # Build fast lookup maps for producing-kernel output indices.
-        # This avoids repeated O(n) list.index() scans when wiring LogicalInputSource
-        # dependencies inside Kernel.convert_kernel().
-        self._kernel_output_index = [
-            {op: idx for idx, op in enumerate(kernel_ops)}
-            for kernel_ops in self.kernels
-        ]
+        # Build lookup maps from op -> output buffer index *as produced by the backend*.
+        #
+        # - Fused elementwise kernels (Fusor) emit one output buffer per op.
+        # - Most single-op kernels emit a single output buffer (index 0).
+        # - Anchored MatMul+epilogue kernels emit only the final op's output
+        #   (index 0). Intermediate ops in that kernel do not have standalone
+        #   outputs and must not be referenced via LogicalInputSource.
+        self._kernel_output_index = []
+        for kid, kops in enumerate(self.kernels):
+            anchored = AnchoredKernel.try_build_from_ops(kops, kid)
+            if anchored is not None:
+                self._kernel_output_index.append({kops[-1]: 0})
+            elif len(kops) > 1:
+                self._kernel_output_index.append(
+                    {op: idx for idx, op in enumerate(kops)}
+                )
+            else:
+                self._kernel_output_index.append({kops[0]: 0})
 
         # build custom instructions for fused kernels
         for i, k in zip(
@@ -1508,10 +1731,21 @@ class TensorContext:
         ):
             custom_instruction = None
             kernel_name = None
+
+            # Try anchored kernel pattern first (MatMul + epilogues)
+            anchored = AnchoredKernel.try_build_from_ops(k, i)
+            if anchored is not None:
+                # MatMul with epilogue fusion
+                kernel_result = anchored.convert_kernel(self)
+                self.kernels_objs.append(kernel_result)
+                continue
+
+            # Otherwise, try regular fusion
             if len(k) > 1:
                 fusor = Fusor(k)
                 custom_instruction, kernel_name = fusor.build_kernel()
                 self.all_custom_instructions.append(custom_instruction)
+
             kernel = Kernel(
                 [op for op in k],
                 custom_instruction,
@@ -1566,6 +1800,33 @@ class TensorContext:
             if not accumulate:
                 self.zero_grads()
 
+            debug_nonfinite = os.getenv("TENSOROPS_DEBUG_NONFINITE_GRADS") not in (
+                None,
+                "",
+                "0",
+            )
+
+            def _tensor_has_nonfinite(t: Tensor) -> bool:
+                src = t.flat if getattr(t, "flat", None) is not None else t.values
+                if src is None:
+                    return False
+                if isinstance(src, memoryview):
+                    if src.format != "f":
+                        src = src.cast("f")
+                    for v in src:
+                        if math.isnan(v) or math.isinf(v):
+                            return True
+                    return False
+                if isinstance(src, (bytearray, bytes)):
+                    for v in memoryview(src).cast("f"):
+                        if math.isnan(v) or math.isinf(v):
+                            return True
+                    return False
+                for v in src:
+                    if math.isnan(v) or math.isinf(v):
+                        return True
+                return False
+
             # Seed gradients for true graph outputs only.
             #
             # Important: when fusion is enabled, a single kernel can contain many ops.
@@ -1602,6 +1863,23 @@ class TensorContext:
                     continue
                 op.get_grad()
 
+                if debug_nonfinite and getattr(op, "grads", None) is not None:
+                    if _tensor_has_nonfinite(op.grads):
+                        raise ValueError(
+                            f"Non-finite grads produced by {type(op).__name__} during backward()"
+                        )
+
+                if debug_nonfinite:
+                    for parent in getattr(op, "parents", []) or []:
+                        if not isinstance(parent, Tensor):
+                            continue
+                        if getattr(parent, "grads", None) is None:
+                            continue
+                        if _tensor_has_nonfinite(parent.grads):
+                            raise ValueError(
+                                f"Non-finite grads reached parent {type(parent).__name__} from {type(op).__name__}"
+                            )
+
             # Backward is executed as a separate graph submission (execute_ops with lim_kernels).
             # That means backward kernels cannot reference forward kernel outputs via
             # LogicalInputSource (those kernels won't be re-executed). Materialise only the
@@ -1628,6 +1906,35 @@ class TensorContext:
 
             # Execute backward-only kernels.
             self.execute_ops(backward_graph_start, backward_kernel_start)
+
+            if debug_nonfinite:
+                # After backward kernels have executed, grads should be materialized.
+                # Scan leaf tensors (operands) and any op parents for NaN/Inf.
+                candidates: set[Tensor] = set()
+                for t in self.operands:
+                    if isinstance(t, Tensor):
+                        candidates.add(t)
+                for op2 in self.ops:
+                    if not isinstance(op2, OP):
+                        continue
+                    for p in getattr(op2, "parents", []) or []:
+                        if isinstance(p, Tensor):
+                            candidates.add(p)
+
+                for t in candidates:
+                    g = getattr(t, "grads", None)
+                    if g is None:
+                        continue
+                    # Force lazy materialization if applicable.
+                    if (
+                        getattr(g, "is_op", False)
+                        and getattr(g, "_pending_kernel_result", None) is not None
+                    ):
+                        _ = g.values
+                    if _tensor_has_nonfinite(g):
+                        raise ValueError(
+                            f"Non-finite grads found after backward execution (tensor_shape={getattr(t, 'shape', None)})"
+                        )
 
             # Restore state to pre-backward so repeated forward/backward cycles
             # don't accumulate stale kernels/lookups.
@@ -1723,12 +2030,29 @@ class TensorContext:
                 continue
 
             kernel_result = next(res_iter)
-            for j, op in enumerate(kernel):
-                # LAZY: store the KernelResult without calling .val.
-                # Each op remembers which output index it needs.
+
+            num_outputs = len(kernel_result.val)
+            num_ops = len(kernel)
+
+            if num_outputs == num_ops:
+                for j, op in enumerate(kernel):
+                    op._pending_kernel_result = kernel_result
+                    op._pending_kernel_op_index = j
+                    op._pending_ctx = self
+            elif num_outputs == 1:
+                # Assign to the last op (common for fusion)
+                op = kernel[-1]
                 op._pending_kernel_result = kernel_result
-                op._pending_kernel_op_index = j
+                op._pending_kernel_op_index = 0
                 op._pending_ctx = self
+            else:
+                # Fallback: assign to last N ops
+                for j in range(num_outputs):
+                    op_idx = num_ops - num_outputs + j
+                    op = kernel[op_idx]
+                    op._pending_kernel_result = kernel_result
+                    op._pending_kernel_op_index = j
+                    op._pending_ctx = self
 
     def execute_ops(self, lim=0, lim_kernels=0):
         self.rewrite()

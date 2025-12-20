@@ -3,15 +3,14 @@ use crate::kernel::{
     ResolvedInput,
 };
 use ocl::core::DeviceInfo;
-use ocl::{Buffer, DeviceType};
 use ocl::{
     core::QUEUE_OUT_OF_ORDER_EXEC_MODE_ENABLE, Context, Device, Error as OclError,
     Kernel as OclKernel, Platform, Program, Queue,
 };
+use ocl::{Buffer, DeviceType};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyByteArray;
-use pyo3::{ffi, AsPyPointer};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -27,6 +26,9 @@ pub struct Runtime {
     device: Device,
     queue: Queue,
     program_cache: HashMap<String, Program>,
+    /// Cache of device buffers for stable DirectInput objects.
+    /// Keyed by the PyObject pointer address of the DirectInput instance.
+    direct_input_buffer_cache: HashMap<usize, Buffer<f32>>,
 }
 
 fn pick_platform_and_device() -> (Platform, Device) {
@@ -36,10 +38,13 @@ fn pick_platform_and_device() -> (Platform, Device) {
         if let Ok(devices) = Device::list(platform, Some(DeviceType::GPU)) {
             if !devices.is_empty() {
                 // Return platform + GPU device
-                let device = devices.into_iter().max_by_key(|d| match d.info(DeviceInfo::MaxComputeUnits).unwrap() {
-                    ocl::enums::DeviceInfoResult::MaxComputeUnits(units) => units,
-                    _ => 0,
-                }).unwrap();
+                let device = devices
+                    .into_iter()
+                    .max_by_key(|d| match d.info(DeviceInfo::MaxComputeUnits).unwrap() {
+                        ocl::enums::DeviceInfoResult::MaxComputeUnits(units) => units,
+                        _ => 0,
+                    })
+                    .unwrap();
                 return (platform, device);
             }
         }
@@ -51,7 +56,6 @@ fn pick_platform_and_device() -> (Platform, Device) {
     }
     panic!("No OpenCL device found");
 }
-
 
 #[pymethods]
 impl Runtime {
@@ -75,6 +79,7 @@ impl Runtime {
             device,
             queue,
             program_cache: HashMap::new(),
+            direct_input_buffer_cache: HashMap::new(),
         })
     }
 
@@ -163,6 +168,7 @@ impl Runtime {
             > = HashMap::new();
             let mut batch_ocl_output_buffers: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
             let mut batch_ocl_kernel_args: HashMap<usize, Vec<Buffer<f32>>> = HashMap::new();
+            let mut batch_ocl_input_count: HashMap<usize, usize> = HashMap::new();
             let mut batch_work_sizes: HashMap<usize, usize> = HashMap::new();
             let mut batch_scalar_args: HashMap<usize, Vec<f32>> = HashMap::new();
 
@@ -176,8 +182,19 @@ impl Runtime {
 
                 if let Some(inputs) = &kernel_info.inputs {
                     for inp in inputs {
-                        if let Ok(direct) = inp.bind(py).extract::<DirectInput>() {
-                            resolved_inputs.push(ResolvedInput::Host(direct.data));
+                        // DirectInput: cache the device buffer keyed by the PyObject pointer.
+                        // This is a massive speedup for tight recompute loops.
+                        if let Ok(direct_ref) = inp.bind(py).extract::<PyRef<DirectInput>>() {
+                            // Some kernels (VecSum/VecMax/VecMin) pass scalar parameters
+                            // (pre, axis_len, post) as 1-element DirectInputs, which must remain
+                            // host-resident because we extract them via ResolvedInput::scalar0.
+                            // Caching them as device buffers would break scalar extraction.
+                            if direct_ref.data.len() == 1 {
+                                resolved_inputs.push(ResolvedInput::Host(direct_ref.data.clone()));
+                                continue;
+                            }
+                            // Disable caching to avoid stale data issues with reused Python objects
+                            resolved_inputs.push(ResolvedInput::Host(direct_ref.data.clone()));
                         } else if let Ok(l_src) = inp.bind(py).extract::<LogicalInputSource>() {
                             let src_bufs = device_results_map
                                 .get(&l_src.source_kernel_id)
@@ -210,13 +227,18 @@ impl Runtime {
             for (kernel_id, (kernel_info, resolved_inputs)) in &batch_resolved_kernel_data {
                 batch_kernel_sources.insert(kernel_info.kernel_src.as_str());
                 let (input_bufs, output_bufs, work_size, scalar_inputs) = kernel_info
-                    .prepare_ocl_buffers_from_resolved_inputs_any(&queue, resolved_inputs)?;
+                    .prepare_ocl_buffers_from_resolved_inputs_any(
+                        &queue,
+                        resolved_inputs,
+                        &mut self.direct_input_buffer_cache,
+                    )?;
 
                 let mut all_args = input_bufs.clone();
                 all_args.extend(output_bufs.clone());
 
                 batch_ocl_kernel_args.insert(*kernel_id, all_args);
                 batch_ocl_output_buffers.insert(*kernel_id, output_bufs);
+                batch_ocl_input_count.insert(*kernel_id, input_bufs.len()); // Track input count
                 batch_work_sizes.insert(*kernel_id, work_size);
                 batch_scalar_args.insert(*kernel_id, scalar_inputs);
             }
@@ -232,29 +254,18 @@ impl Runtime {
             let program_src_hash = src_hasher.finish();
 
             let program = if let Some(p) = self.program_cache.get(&program_src) {
-                if debug_cache {
-                    eprintln!(
-                        "[tensorops_backend] program_cache hit hash={:016x} sources={} kernels={}",
-                        program_src_hash,
-                        batch_kernel_sources_vec.len(),
-                        current_batch_ids_to_run.len()
-                    );
-                }
+                if debug_cache {}
                 p.clone()
             } else {
-                if debug_cache {
-                    eprintln!(
-                        "[tensorops_backend] program_cache miss hash={:016x} sources={} kernels={}",
-                        program_src_hash,
-                        batch_kernel_sources_vec.len(),
-                        current_batch_ids_to_run.len()
-                    );
-                }
+                if debug_cache {}
                 let p = Program::builder()
                     .src(program_src.clone())
                     .devices(self.device.clone())
                     .build(&self.context)
-                    .map_err(|e| ocl_py_err(e, "Program Build"))?;
+                    .map_err(|e| {
+                        eprintln!("ERROR: Program build failed: {:?}", e);
+                        ocl_py_err(e, "Program Build")
+                    })?;
                 self.program_cache.insert(program_src.clone(), p.clone());
                 p
             };
@@ -281,21 +292,62 @@ impl Runtime {
                         PredefinedKernel::VecSum => "VecSum".to_string(),
                         PredefinedKernel::VecMax => "VecMax".to_string(),
                         PredefinedKernel::VecMin => "VecMin".to_string(),
+                        PredefinedKernel::MatMul => "TiledMatMul_16x16".to_string(),
                         _ => pk.to_string(),
                     },
                     KernelType::Custom(cn) => cn.clone(),
                 };
 
                 let mut builder = OclKernel::builder();
-                builder
-                    .program(&program)
-                    .name(&name)
-                    .queue(queue.clone())
-                    .global_work_size(work_size);
+                builder.program(&program).name(&name).queue(queue.clone());
 
-                // Buffer args first (all inputs + all outputs)
-                for arg in args.iter() {
-                    builder.arg(arg);
+                // Handle 2D vs 1D global work size
+                if let Some((gx, gy)) = kernel_info.global_work_size_2d {
+                    builder.global_work_size([gx, gy]);
+                    if let Some((lx, ly)) = kernel_info.local_work_size {
+                        builder.local_work_size([lx, ly]);
+                    }
+                } else {
+                    builder.global_work_size(work_size);
+                }
+
+                // For tiled MatMul, insert local memory BETWEEN input and output args
+                let needs_local_mem = name.contains("TiledMatMul");
+                let input_count = batch_ocl_input_count.get(kernel_id).copied().unwrap_or(0);
+
+                if needs_local_mem {}
+
+                // Add arguments in correct order for TiledMatMul
+                if needs_local_mem && input_count > 0 && args.len() > input_count {
+                    // Add input buffers first (A, B, M, N, K)
+                    for i in 0..input_count {
+                        builder.arg(&args[i]);
+                    }
+
+                    // Then add local memory (A_tile, B_tile)
+                    let tile_size = if let Some(pos) = name.rfind('_') {
+                        let suffix = &name[pos + 1..];
+                        if let Some(x_pos) = suffix.find('x') {
+                            suffix[..x_pos].parse::<usize>().unwrap_or(16)
+                        } else {
+                            16
+                        }
+                    } else {
+                        16
+                    };
+                    let local_mem_elements = tile_size * tile_size;
+                    builder.arg_local::<f32>(local_mem_elements); // A_tile
+                    builder.arg_local::<f32>(local_mem_elements); // B_tile
+
+                    // Finally add output buffers (C)
+                    for i in input_count..args.len() {
+                        builder.arg(&args[i]);
+                    }
+                } else {
+                    // Regular kernel: just add all buffer args
+                    for arg in args.iter() {
+                        builder.arg(arg);
+                    }
                 }
 
                 // Then scalar args (VecLog, VecLeakyReLU, VecSum, etc.)
@@ -303,7 +355,10 @@ impl Runtime {
                     builder.arg(s);
                 }
 
-                let k = builder.build().map_err(|e| ocl_py_err(e, "Kernel Build"))?;
+                let k = builder.build().map_err(|e| {
+                    eprintln!("ERROR building kernel '{}': {:?}", name, e);
+                    ocl_py_err(e, "Kernel Build")
+                })?;
                 unsafe { k.enq().map_err(|e| ocl_py_err(e, "Kernel Enqueue"))? };
             }
 

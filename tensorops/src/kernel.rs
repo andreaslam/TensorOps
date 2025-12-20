@@ -5,10 +5,19 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum ResolvedInput {
     Host(Vec<f32>),
+    /// Host-provided input that should be cached as a device buffer.
+    ///
+    /// `key` is expected to be stable across execute_graph() calls (e.g. the
+    /// PyObject pointer of a DirectInput instance).
+    HostCached {
+        key: usize,
+        data: Vec<f32>,
+    },
     Device(Buffer<f32>),
 }
 
@@ -16,6 +25,7 @@ impl ResolvedInput {
     fn len(&self) -> usize {
         match self {
             ResolvedInput::Host(v) => v.len(),
+            ResolvedInput::HostCached { data, .. } => data.len(),
             ResolvedInput::Device(b) => b.len(),
         }
     }
@@ -23,6 +33,10 @@ impl ResolvedInput {
     fn scalar0(&self) -> Result<f32, PyErr> {
         match self {
             ResolvedInput::Host(v) => v
+                .first()
+                .copied()
+                .ok_or_else(|| PyValueError::new_err("Expected scalar input (len 1)")),
+            ResolvedInput::HostCached { data, .. } => data
                 .first()
                 .copied()
                 .ok_or_else(|| PyValueError::new_err("Expected scalar input (len 1)")),
@@ -203,7 +217,7 @@ impl DirectInput {
         if let Ok(buffer) = data.extract::<PyBuffer<f32>>() {
             if buffer.is_c_contiguous() {
                 if let Some(slice) = buffer.as_slice(data.py()) {
-                    // Optimization: cast &[ReadOnlyCell<f32>] to &[f32] and use to_vec (memcpy)
+                    // Optimisation: cast &[ReadOnlyCell<f32>] to &[f32] and use to_vec (memcpy)
                     // ReadOnlyCell is #[repr(transparent)] so this is safe.
                     let f32_slice = unsafe {
                         std::slice::from_raw_parts(slice.as_ptr() as *const f32, slice.len())
@@ -246,6 +260,16 @@ pub struct KernelTensorOps {
     #[pyo3(get)]
     pub num_output_bufs: usize,
     pub scalar_inputs: Option<Vec<Vec<f32>>>,
+
+    // 2D workgroup support: (global_x, global_y) for tiled kernels
+    // If None, use 1D global_work_size. If Some, use 2D.
+    #[pyo3(get, set)]
+    pub global_work_size_2d: Option<(usize, usize)>,
+
+    // Local workgroup size: (local_x, local_y)
+    // If None, let OpenCL decide. Typically (16, 16) for tiled MatMul.
+    #[pyo3(get, set)]
+    pub local_work_size: Option<(usize, usize)>,
 }
 
 impl Clone for KernelTensorOps {
@@ -261,6 +285,8 @@ impl Clone for KernelTensorOps {
                 .map(|v| v.iter().map(|x| x.clone_ref(py)).collect()),
             num_output_bufs: self.num_output_bufs,
             scalar_inputs: self.scalar_inputs.clone(),
+            global_work_size_2d: self.global_work_size_2d,
+            local_work_size: self.local_work_size,
         })
     }
 }
@@ -268,7 +294,7 @@ impl Clone for KernelTensorOps {
 #[pymethods]
 impl KernelTensorOps {
     #[new]
-    #[pyo3(signature = (kernel_type, kernel_id, num_output_bufs, custom_kernel_src=None, inputs=None, scalar_inputs=None, work_size_override=None))]
+    #[pyo3(signature = (kernel_type, kernel_id, num_output_bufs, custom_kernel_src=None, inputs=None, scalar_inputs=None, work_size_override=None, global_work_size_2d=None, local_work_size=None))]
     pub fn new(
         kernel_type: KernelType,
         kernel_id: usize,
@@ -277,6 +303,8 @@ impl KernelTensorOps {
         inputs: Option<Vec<PyObject>>,
         scalar_inputs: Option<Vec<Vec<f32>>>,
         work_size_override: Option<usize>,
+        global_work_size_2d: Option<(usize, usize)>,
+        local_work_size: Option<(usize, usize)>,
     ) -> PyResult<Self> {
         let kernel_src = match &kernel_type {
             KernelType::Predefined(predefined_kernel) => {
@@ -308,6 +336,8 @@ impl KernelTensorOps {
             inputs,
             num_output_bufs,
             scalar_inputs,
+            global_work_size_2d,
+            local_work_size,
         })
     }
 
@@ -331,6 +361,7 @@ impl KernelTensorOps {
         &self,
         queue: &Queue,
         resolved_inputs: &[ResolvedInput],
+        host_buffer_cache: &mut HashMap<usize, Buffer<f32>>,
     ) -> Result<(Vec<Buffer<f32>>, Vec<Buffer<f32>>, usize, Vec<f32>), PyErr> {
         let mut scalar_inputs = Vec::new();
         let mut input_ocl_buffers: Vec<Buffer<f32>> = Vec::new();
@@ -370,6 +401,26 @@ impl KernelTensorOps {
                                 self.kernel_id, e
                             ))
                         })?,
+                    ResolvedInput::HostCached { key, data } => {
+                        if let Some(cached) = host_buffer_cache.get(key) {
+                            cached.clone()
+                        } else {
+                            let buf = Buffer::<f32>::builder()
+                                .queue(queue.clone())
+                                .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                                .len(data.len())
+                                .copy_host_slice(data.as_slice())
+                                .build()
+                                .map_err(|e| {
+                                    PyRuntimeError::new_err(format!(
+                                        "Kernel {}: Failed to create reduce cached input buffer: {}",
+                                        self.kernel_id, e
+                                    ))
+                                })?;
+                            host_buffer_cache.insert(*key, buf.clone());
+                            buf
+                        }
+                    }
                     ResolvedInput::Device(b) => b.clone(),
                 });
 
@@ -408,6 +459,26 @@ impl KernelTensorOps {
                                     self.kernel_id, i, e
                                 ))
                             })?,
+                        ResolvedInput::HostCached { key, data } => {
+                            if let Some(cached) = host_buffer_cache.get(key) {
+                                cached.clone()
+                            } else {
+                                let buf = Buffer::<f32>::builder()
+                                    .queue(queue.clone())
+                                    .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                                    .len(data.len())
+                                    .copy_host_slice(data.as_slice())
+                                    .build()
+                                    .map_err(|e| {
+                                        PyRuntimeError::new_err(format!(
+                                            "Kernel {}: Failed to create cached input buffer {}: {}",
+                                            self.kernel_id, i, e
+                                        ))
+                                    })?;
+                                host_buffer_cache.insert(*key, buf.clone());
+                                buf
+                            }
+                        }
                         ResolvedInput::Device(b) => b.clone(),
                     };
                     input_ocl_buffers.push(buf);
@@ -421,6 +492,20 @@ impl KernelTensorOps {
                     .map(|b| b.len())
                     .max()
                     .ok_or_else(|| PyValueError::new_err("No inputs"))?;
+
+                // Elementwise kernels support scalar broadcasting (len 1) via
+                // passing the input buffer lengths as scalar args.
+                if matches!(
+                    self.kernel_type,
+                    KernelType::Predefined(PredefinedKernel::VecAdd)
+                        | KernelType::Predefined(PredefinedKernel::VecSub)
+                        | KernelType::Predefined(PredefinedKernel::VecElementMul)
+                        | KernelType::Predefined(PredefinedKernel::VecDiv)
+                ) && input_ocl_buffers.len() >= 2
+                {
+                    scalar_inputs.push(input_ocl_buffers[0].len() as f32);
+                    scalar_inputs.push(input_ocl_buffers[1].len() as f32);
+                }
 
                 // Special handling for VecPow: pass base buffer length as scalar for broadcasting
                 if matches!(
@@ -525,6 +610,18 @@ impl KernelTensorOps {
                 buffer_inputs.extend(resolved_input_data.clone());
                 let inferred = buffer_inputs.iter().map(|v| v.len()).max().unwrap_or(0);
 
+                if matches!(
+                    self.kernel_type,
+                    KernelType::Predefined(PredefinedKernel::VecAdd)
+                        | KernelType::Predefined(PredefinedKernel::VecSub)
+                        | KernelType::Predefined(PredefinedKernel::VecElementMul)
+                        | KernelType::Predefined(PredefinedKernel::VecDiv)
+                ) && buffer_inputs.len() >= 2
+                {
+                    scalar_inputs.push(buffer_inputs[0].len() as f32);
+                    scalar_inputs.push(buffer_inputs[1].len() as f32);
+                }
+
                 // Special handling for VecPow: pass base buffer length as scalar for broadcasting
                 if matches!(
                     self.kernel_type,
@@ -570,7 +667,19 @@ impl KernelTensorOps {
             ) && i == 0
                 && vec_data.len() == 1;
 
-            if !is_reduce_input && !is_pow_base && vec_data.len() != work_size_dims {
+            let is_elementwise_scalar = matches!(
+                self.kernel_type,
+                KernelType::Predefined(PredefinedKernel::VecAdd)
+                    | KernelType::Predefined(PredefinedKernel::VecSub)
+                    | KernelType::Predefined(PredefinedKernel::VecElementMul)
+                    | KernelType::Predefined(PredefinedKernel::VecDiv)
+            ) && vec_data.len() == 1;
+
+            if !is_reduce_input
+                && !is_pow_base
+                && !is_elementwise_scalar
+                && vec_data.len() != work_size_dims
+            {
                 return Err(PyValueError::new_err(format!(
                     "Kernel {}: Input vector {} length mismatch: expected {}, got {}.",
                     self.kernel_id,

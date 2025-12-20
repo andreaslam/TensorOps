@@ -1,6 +1,25 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyByteArray, PyList, PyMemoryView};
+use pyo3::types::{PyAny, PyByteArray, PyList};
 use pyo3::Bound;
+
+#[pyfunction]
+pub fn tensor_full<'py>(
+    py: Python<'py>,
+    value: f32,
+    shape: Vec<usize>,
+) -> PyResult<(PyObject, Vec<usize>)> {
+    let count: usize = shape.iter().product();
+    let flat = vec![value; count];
+
+    let byte_slice = unsafe {
+        std::slice::from_raw_parts(
+            flat.as_ptr() as *const u8,
+            flat.len() * std::mem::size_of::<f32>(),
+        )
+    };
+    let byte_array = PyByteArray::new(py, byte_slice);
+    Ok((byte_array.into_py(py), shape))
+}
 
 #[pyfunction]
 pub fn get_shape<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<usize>> {

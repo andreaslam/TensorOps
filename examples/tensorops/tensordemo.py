@@ -14,7 +14,6 @@ def main():
         start = time.time()
         a = Tensor([[random.random() for _ in range(n * n)]], requires_grad=True)
         a_cos = a.cos()
-        # print(a_cos)
         b = Tensor([[random.random() for _ in range(n * n)]], requires_grad=False)
         x = Tensor([random.random() for _ in range(n * n)], requires_grad=False)
         y = Tensor(

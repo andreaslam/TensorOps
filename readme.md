@@ -20,25 +20,18 @@ git clone https://github.com/andreaslam/TensorOps.git
 At the root of the repository, run:
 
 ```
-pip install -e .
+pip install .
 ```
 
 ### Building the Backend
 
-To compile the Rust OpenCL backend, `maturin` is needed. If not installed already, run:
-
-```
-pip install maturin
-```
+To compile the Rust OpenCL backend, `cargo` is needed.
 
 Then run:
 ```
 cd tensorops
 maturin develop --release
 ```
-
-The backend should be installed into 
-
 
 Support for non-OpenCL backend is still in progress. PRs welcome.
 
@@ -58,7 +51,7 @@ Most examples implemented in the examples folder, will have a corresponding [PyT
 - Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid, ramp)
 - Lazy evaluation
 
-### Tensor (Work In Progress)
+### Tensor
 - Weight and gradient tracking (enable/disable)
 - Arithmetic operations (BIDMAS, negation, exponentiation, modulo, [several Python reverse operations](https://docs.python.org/3/reference/datamodel.html#emulating-numeric-types))
 - Non-linear activation functions (sin, cos, tanh, ReLU, sigmoid, ramp)

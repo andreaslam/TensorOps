@@ -7,7 +7,6 @@ requires-python = ">=3.8"
 dependencies = [
     "matplotlib==3.10.5",
     "matplotlib-inline==0.1.6",
-    "pandas==1.5.3",
     "networkx==3.0rc1",
     "tqdm==4.66.5",
     "setuptools==75.8.0",
@@ -31,6 +30,11 @@ Issues = "https://github.com/andreaslam/tensorops/issues"
 [tool.setuptools]
 packages = ["tensorops"]
 
+[tool.maturin]
+python-source = "."
+module-name = "tensorops.tensorops_backend"
+manifest-path = "tensorops/Cargo.toml"
+
 [build-system]
-requires = ["setuptools", "wheel", "pybind11"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"

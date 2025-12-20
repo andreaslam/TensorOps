@@ -24,6 +24,7 @@ fn tensorops_backend(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_kernel_source_by_name, m)?)?;
     m.add_function(wrap_pyfunction!(get_shape, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_from_list, m)?)?;
+    m.add_function(wrap_pyfunction!(tensor_full, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_expand, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_max, m)?)?;
     m.add_function(wrap_pyfunction!(tensor_min, m)?)?;
