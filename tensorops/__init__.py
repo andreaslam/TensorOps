@@ -21,7 +21,7 @@ except ImportError:
 _backend = os.getenv("TENSOROPS_BACKEND", "").lower()
 rt: Union[Any, None] = None
 
-if _backend == "mlx":
+if _backend == "mlx" or platform.system().lower() == "darwin":
     try:
         from .mlx_runtime import MLXRuntime
 
