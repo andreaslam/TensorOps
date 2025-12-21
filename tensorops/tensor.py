@@ -8,13 +8,14 @@ from functools import reduce
 from operator import mul, xor
 from typing import Optional, cast
 
-import tensorops_backend
+import tensorops
+
+if tensorops.TENSOROPS_BACKEND_AVAILABLE:
+    import tensorops_backend
 
 from tensorops import rt
 
-# TODO
-# impl nn essentials, eg softplus, argmax
-# docstrings/
+# TODO docstrings
 
 
 class Tensor(ABC):
@@ -34,9 +35,9 @@ class Tensor(ABC):
         self.grad_tensor = grad_tensor
         self.device = device or TensorOpsDevice.OPENCL  # Default to OpenCL
         has_value = values is not None
-        assert xor(has_value, is_op), (
-            f"Must be either a valued Tensor or an OP, got {values}"
-        )
+        assert xor(
+            has_value, is_op
+        ), f"Must be either a valued Tensor or an OP, got {values}"
         self.is_op = is_op
         self.enable_fusion = enable_fusion
         # user decides whether the tensor can be fused or not, for example, if the user wants to see the value of a tensor, since the value of the tensor might not be guaranteed to be present due to kernel fusion not returning intermediate results. this guarantees that the tensor value is returned
@@ -54,9 +55,9 @@ class Tensor(ABC):
             else:
                 raise ValueError("Invalid subtype inside list!")
         else:
-            assert isinstance(self, OP), (
-                "Tensor must either have value or is an instance of an OP class!"
-            )
+            assert isinstance(
+                self, OP
+            ), "Tensor must either have value or is an instance of an OP class!"
             # OP can init with no values or grad but needs shape
             self._values = None
             self._shape = None
@@ -68,13 +69,43 @@ class Tensor(ABC):
                 self.memview = self._values
                 self._flat = memoryview(self.memview).cast("f")
             else:
-                self.memview, inferred_shape = tensorops_backend.tensor_from_list(
-                    self._values
-                )
-                self._shape = (
-                    tuple(inferred_shape) if inferred_shape is not None else None
-                )
-                self._flat = memoryview(self.memview).cast("f")
+                # Prefer Rust helper when available; otherwise infer shape and flatten in Python.
+                try:
+                    if tensorops.TENSOROPS_BACKEND_AVAILABLE:
+                        (
+                            self.memview,
+                            inferred_shape,
+                        ) = tensorops_backend.tensor_from_list(self._values)
+                        self._shape = (
+                            tuple(inferred_shape)
+                            if inferred_shape is not None
+                            else None
+                        )
+                        self._flat = memoryview(self.memview).cast("f")
+                    else:
+                        # Python fallback: infer shape from nested lists and flatten
+                        vals = self._values
+                        if vals and isinstance(vals[0], list):
+                            rows = len(vals)
+                            cols = len(vals[0])
+                            self._shape = (rows, cols)
+                            flat_list = [float(x) for row in vals for x in row]
+                        else:
+                            self._shape = (len(vals),)
+                            flat_list = [float(x) for x in vals]
+                        self.memview = None
+                        self._flat = flat_list
+                except Exception:
+                    # As a safe fallback if backend import fails mid-run
+                    vals = self._values
+                    if vals and isinstance(vals[0], list):
+                        rows = len(vals)
+                        cols = len(vals[0])
+                        self._shape = (rows, cols)
+                        self._flat = [float(x) for row in vals for x in row]
+                    else:
+                        self._shape = (len(vals),)
+                        self._flat = [float(x) for x in vals]
         else:
             self._flat = None
         if self.weight:
@@ -292,9 +323,9 @@ class Tensor(ABC):
     def reshape(self, shape) -> ShapeOP:
         # support -1 reshaping (unknown)
         shape = (shape,) if isinstance(shape, int) else shape
-        assert (count := shape.count(-1)) <= 1, (
-            f"cannot reshape tensor to shape {shape}"
-        )
+        assert (
+            count := shape.count(-1)
+        ) <= 1, f"cannot reshape tensor to shape {shape}"
         assert len(self) % abs(reduce(mul, shape)) == 0, f"invalid shape {shape}"
         dim_size = len(self) // abs(reduce(mul, shape))
         if count == 1:
@@ -811,9 +842,9 @@ class Tensor(ABC):
         return ShapeOP(self, tuple(modify_shape))
 
     def unsqueeze(self, dim=0):
-        assert dim >= -1 and dim <= len(self.shape), (
-            f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
-        )
+        assert dim >= -1 and dim <= len(
+            self.shape
+        ), f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
         modify_shape = list(self.shape)
         modify_shape.insert(dim, 1)
         return ShapeOP(self, tuple(modify_shape))
@@ -836,16 +867,16 @@ class Tensor(ABC):
 
     def __getitem__(self, idx):
         idx = (idx,) if isinstance(idx, int) else idx
-        assert len(idx) == len(self.shape), (
-            "Index dimensions must match tensor dimensions"
-        )
+        assert len(idx) == len(
+            self.shape
+        ), "Index dimensions must match tensor dimensions"
 
         flat_idx = 0
         stride = 1
         for i in range(len(self.shape) - 1, -1, -1):
-            assert idx[i] < self.shape[i], (
-                f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
-            )
+            assert (
+                idx[i] < self.shape[i]
+            ), f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
             flat_idx += idx[i] * stride
             stride *= self.shape[i]
 
@@ -1095,7 +1126,8 @@ class OP(Tensor):
                 TensorContext.current_context.add_operands(operands)
 
     @abstractmethod
-    def get_grad(self) -> None: ...
+    def get_grad(self) -> None:
+        ...
 
     def __repr__(self) -> str:
         display = f"requires_grad={self.requires_grad}, weight={self.weight}, self.shape={self.shape}"
@@ -1335,9 +1367,9 @@ class BinaryOP(OP):
         t1_len = len(self.tensor1)
         t2_len = len(self.tensor2)
         self.broadcast = (t1_len != t2_len) and xor(t1_len == 1, t2_len == 1)
-        assert (t1_len == t2_len) or (self.broadcast), (
-            f"Tensor lengths must match! Got {t1_len} and {t2_len}"
-        )
+        assert (t1_len == t2_len) or (
+            self.broadcast
+        ), f"Tensor lengths must match! Got {t1_len} and {t2_len}"
 
         # The current Fusor does not support scalar-broadcast indexing for external
         # inputs (len-1 tensors). Fusing such ops would generate `v_in[gid]` reads
@@ -1427,9 +1459,9 @@ class GenericLog(BinaryOP):
     def __init__(self, tensor1, tensor2) -> None:
         # tensor1 is base (scalar or single-element tensor), tensor2 is input
         # Check before calling super().__init__ because BinaryOP will broadcast tensors
-        assert len(tensor1) == 1, (
-            f"Log base must be a scalar (single-element tensor), got length {len(tensor1)}"
-        )
+        assert (
+            len(tensor1) == 1
+        ), f"Log base must be a scalar (single-element tensor), got length {len(tensor1)}"
         super().__init__(tensor1, tensor2)
         self.base_value = self.tensor1
         self.scalar_operands = [self.base_value]
@@ -1529,9 +1561,9 @@ class LeakyReLU(OP):
         self.shape = self.tensor1.shape
         self.grads = None
 
-        assert len(self.tensor2) == 1, (
-            "Leaky gradient must be a scalar (single-element tensor)"
-        )
+        assert (
+            len(self.tensor2) == 1
+        ), "Leaky gradient must be a scalar (single-element tensor)"
         self.leaky_grad = self.tensor2
         self.scalar_operands = [self.leaky_grad]
 
@@ -1632,9 +1664,9 @@ def leaky_relu(x, leaky_grad=0.01) -> LeakyReLU:
 
 def _check_shape(target_shape, new_shape):
     new_shape = (new_shape,) if isinstance(new_shape, int) else new_shape
-    assert (count := new_shape.count(-1)) <= 1, (
-        f"cannot reshape tensor to shape {new_shape}"
-    )
+    assert (
+        count := new_shape.count(-1)
+    ) <= 1, f"cannot reshape tensor to shape {new_shape}"
     flat_size = reduce(mul, target_shape)
     assert flat_size % abs(flat_size) == 0, f"invalid shape {new_shape}"
     return count
@@ -2310,8 +2342,29 @@ class TensorContext:
                     op._pending_kernel_op_index = j
                     op._pending_ctx = self
 
+    def distribute_results_from_ops(self, results, ops, lim=0):
+        """
+        Distributes results from a list of KernelResult objects (one per Op) back to the Ops.
+
+        Used by the MLX backend which returns a list of results corresponding 1:1 to the
+        input ops list, unlike the OpenCL backend which maps kernels to groups of ops.
+        """
+        if len(results) != len(ops):
+            raise RuntimeError(
+                f"MLX execution returned {len(results)} results for {len(ops)} ops"
+            )
+
+        for op, res in zip(ops, results):
+            # For MLX, every op (including views like ExpandOP) gets a result object.
+            # We attach it so op.values can lazy-load it.
+            # ShapeOP and StopGrad ignore this (via property overrides), which is fine.
+            op._pending_kernel_result = res
+            op._pending_kernel_op_index = 0  # 1:1 mapping means index is always 0
+            op._pending_ctx = self
+
     def execute_ops(self, lim=0, lim_kernels=0):
         from . import get_runtime_for_device
+        from .device import TensorOpsDevice
 
         self.rewrite()
         # Let backend.convert_kernel know which kernel IDs will be executed in
@@ -2319,6 +2372,17 @@ class TensorContext:
         # outside the submitted set (e.g., forward kernels during backward()).
         self._exec_lim_kernels = lim_kernels
         try:
+            # Fast path for APPLE/MLX: skip finalise and go straight to MLX runtime
+            # MLX can fuse at the computational graph level, so we don't need TensorOps fusion
+            if self.device == TensorOpsDevice.APPLE:
+                runtime = get_runtime_for_device(self.device)
+                ops_to_execute = self.ops[lim:]
+                res = runtime.execute_ops_graph(ops_to_execute, self)
+                # MLX runtime returns results indexed by op position, distribute them
+                self.distribute_results_from_ops(res, ops_to_execute, lim)
+                return
+
+            # Standard path: finalise kernels then execute
             self.finalise(lim, lim_kernels)
             valid_kernels = [
                 k for k in self.kernels_objs[lim_kernels:] if k is not None

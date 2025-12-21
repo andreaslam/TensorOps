@@ -401,14 +401,12 @@ __kernel void VecPermuteTemplate(
 ) {
     int gid = get_global_id(0);
 
-    // Compute total output size
     int tgt_size = 1;
     for (int i = 0; i < RANK; i++) {
         tgt_size *= (int)tgt_shape[i];
     }
     if (gid >= tgt_size) return;
 
-    // Map flat gid -> multi-dim coords in target
     int src_idx = 0;
     for (int dim = 0; dim < RANK; dim++) {
         int stride = (int)tgt_strides[dim];
@@ -467,43 +465,29 @@ __kernel void TiledMatMul_16x16(
 
     float acc = 0.0f;
 
-    // Process K in chunks of TILE_SIZE
     for (int tile_k = 0; tile_k < K; tile_k += TILE_SIZE) {
-        // Load tile from A: [TILE_SIZE x TILE_SIZE] at position [global_row, tile_k]
-        // Each workitem (local_row, local_col) loads A[global_row, tile_k + local_col]
         if (global_row < M && (tile_k + local_col) < K) {
             A_tile[local_row * TILE_SIZE + local_col] = A[global_row * K + tile_k + local_col];
         } else {
             A_tile[local_row * TILE_SIZE + local_col] = 0.0f;
         }
 
-        // Load tile from B: [TILE_SIZE x TILE_SIZE] at position [tile_k, global_col]
-        // Each workitem (local_row, local_col) loads B[tile_k + local_row, global_col]
         if ((tile_k + local_row) < K && global_col < N) {
             B_tile[local_row * TILE_SIZE + local_col] = B[(tile_k + local_row) * N + global_col];
         } else {
             B_tile[local_row * TILE_SIZE + local_col] = 0.0f;
         }
 
-        // Synchronize: all threads must finish loading before compute
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        // Compute: each thread accumulates over the tile
-        // This thread (local_row, local_col) computes:
-        //   acc += sum of A_tile[local_row, :] * B_tile[:, local_col]
         for (int k = 0; k < TILE_SIZE; k++) {
             acc += A_tile[local_row * TILE_SIZE + k] * B_tile[k * TILE_SIZE + local_col];
         }
 
-        // Synchronize before next tile iteration
         barrier(CLK_LOCAL_MEM_FENCE);
     }
 
-    // Write result (epilogue fusion happens here)
     if (global_row < M && global_col < N) {
-        // EPILOGUE_PLACEHOLDER will be replaced by user-provided epilogue code
-        // Example: float result = sin(acc) + bias[global_col];
-        // The placeholder allows fusion of elementwise ops without rewriting this kernel
         EPILOGUE_PLACEHOLDER
         C[global_row * N + global_col] = acc;
     }

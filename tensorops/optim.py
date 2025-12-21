@@ -147,7 +147,9 @@ class Adam(Optim):
             else:
                 self.m[param] = [
                     self.betas[0] * m + (1 - self.betas[0]) * g
-                    for m, g in zip(self.m[param], g_t)  # pyright: ignore[reportArgumentType]
+                    for m, g in zip(
+                        self.m[param], g_t
+                    )  # pyright: ignore[reportArgumentType]
                 ]
 
             # Update biased second raw moment estimate
@@ -156,7 +158,9 @@ class Adam(Optim):
             else:
                 self.v[param] = [
                     self.betas[1] * v + (1 - self.betas[1]) * (g**2)
-                    for v, g in zip(self.v[param], g_t)  # pyright: ignore[reportArgumentType]
+                    for v, g in zip(
+                        self.v[param], g_t
+                    )  # pyright: ignore[reportArgumentType]
                 ]
 
             # Bias-corrected estimates
@@ -171,7 +175,9 @@ class Adam(Optim):
                 else:
                     self.v_hat_max[param] = [
                         max(v_max, v)
-                        for v_max, v in zip(self.v_hat_max[param], v_hat_t)  # pyright: ignore[reportArgumentType]
+                        for v_max, v in zip(
+                            self.v_hat_max[param], v_hat_t
+                        )  # pyright: ignore[reportArgumentType]
                     ]
                 denom = [
                     math.sqrt(v_max) + self.eps

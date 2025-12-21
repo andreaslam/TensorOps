@@ -537,12 +537,12 @@ class Kernel:
     def __init__(
         self, op_list: List[OP], custom_src_str: Union[str, None], kernel_id_val: int
     ):
-        self.op: List[OP] = (
-            op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
-        )
-        self.src: Union[str, None] = (
-            custom_src_str  # Custom source from Fusor, or None for predefined
-        )
+        self.op: List[
+            OP
+        ] = op_list  # List of OP objects in this kernel (1 for predefined, multiple for fused)
+        self.src: Union[
+            str, None
+        ] = custom_src_str  # Custom source from Fusor, or None for predefined
 
         # self.deps is not directly used for KernelTensorOps creation anymore in the new way
         # self.inputs (direct_initial_inputs) is used for direct_inputs field
@@ -943,9 +943,9 @@ class Kernel:
             elif scalars := self.op[0].scalar_operands:
                 # Generic handling for predefined ops with scalar operands (e.g., GenericLog, LeakyReLU)
                 if op_name == "GenericLog":
-                    assert len(self.op[0].parents) == 2, (
-                        "GenericLog expects two parents (base, input)"
-                    )
+                    assert (
+                        len(self.op[0].parents) == 2
+                    ), "GenericLog expects two parents (base, input)"
                 for scalar in scalars:
                     assert len(scalar.values) == 1, "Scalar must be a single value"
 
@@ -1063,9 +1063,9 @@ class Fusor:
     _kernel_cache: Dict[str, Tuple[str, str]] = {}
 
     def __init__(self, fuse_ops: List[OP]) -> None:
-        assert all(isinstance(op, OP) for op in fuse_ops), (
-            "All items in fuse_ops must be OP instances"
-        )
+        assert all(
+            isinstance(op, OP) for op in fuse_ops
+        ), "All items in fuse_ops must be OP instances"
         self.fuse_ops = fuse_ops
         self.kernel_name: str | None = None
         self.kernel_instructions: str | None = None

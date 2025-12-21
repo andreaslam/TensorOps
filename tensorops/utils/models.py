@@ -45,9 +45,9 @@ class SimpleSequentialModel(Model):
             return self.model_layers[-1].layer_output
 
     def calculate_loss(self, output: Tensor, target: Tensor) -> Tensor:  # type: ignore
-        assert self.output_tensor and self.output_tensor.values is not None, (
-            "Output layer not defined"
-        )
+        assert (
+            self.output_tensor and self.output_tensor.values is not None
+        ), "Output layer not defined"
         assert self.targets is not None, "Targets not defined"
         with self.context:
             self.output_tensor.values = output.values
@@ -73,15 +73,15 @@ class SequentialModel(Model):
         super().__init__(loss_criterion, seed, batch_size=batch_size)
 
     def forward(self, model_inputs: list[Tensor]) -> list[Tensor]:  # type: ignore
-        assert self.model_input_layer and self.model_input_layer.layer_input_tensors, (
-            f"{type(self).__name__}.input_layer not defined!"
-        )
+        assert (
+            self.model_input_layer and self.model_input_layer.layer_input_tensors
+        ), f"{type(self).__name__}.input_layer not defined!"
         assert (
             self.model_output_layer and self.model_output_layer.layer_output_tensors
         ), f"{type(self).__name__}.output_layer not defined!"
-        assert len(model_inputs) == len(self.model_input_layer.layer_input_tensors), (
-            f"Inputs length {len(model_inputs)} != number of input Tensors of model {len(self.model_input_layer.layer_input_tensors)}"
-        )
+        assert len(model_inputs) == len(
+            self.model_input_layer.layer_input_tensors
+        ), f"Inputs length {len(model_inputs)} != number of input Tensors of model {len(self.model_input_layer.layer_input_tensors)}"
         with self.context:
             for layer in self.model_layers:
                 model_inputs = layer(model_inputs)
@@ -97,12 +97,12 @@ class SequentialModel(Model):
         Returns:
             tensorops.model.Model.loss (tensorops.Tensor.Tensor): The resulting Tensor as an output from the calculations of the neural network.
         """
-        assert self.model_input_layer and self.model_input_layer.layer_input_tensors, (
-            f"{type(self).__name__}.input_layer not defined!"
-        )
-        assert self.model_output_layer and self.model_output_layer.layer_output, (
-            f"{type(self).__name__}.output_layer not defined!"
-        )
+        assert (
+            self.model_input_layer and self.model_input_layer.layer_input_tensors
+        ), f"{type(self).__name__}.input_layer not defined!"
+        assert (
+            self.model_output_layer and self.model_output_layer.layer_output
+        ), f"{type(self).__name__}.output_layer not defined!"
         with self.context:
             # Handle both single Tensor and list of Tensors
             if isinstance(output, list) and isinstance(target, list):

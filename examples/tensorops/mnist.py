@@ -40,9 +40,9 @@ def extract_images(filepath):
     with gzip.open(filepath, "rb") as f:
         header = f.read(16)
         magic_number, num_images, rows, cols = struct.unpack(">IIII", header)
-        assert magic_number == 2051, (
-            f"Invalid magic number {magic_number} in image file."
-        )
+        assert (
+            magic_number == 2051
+        ), f"Invalid magic number {magic_number} in image file."
 
         images = []
         for _ in range(num_images):
@@ -58,9 +58,9 @@ def extract_labels(filepath):
     with gzip.open(filepath, "rb") as f:
         header = f.read(8)
         magic_number, num_labels = struct.unpack(">II", header)
-        assert magic_number == 2049, (
-            f"Invalid magic number {magic_number} in label file."
-        )
+        assert (
+            magic_number == 2049
+        ), f"Invalid magic number {magic_number} in label file."
 
         labels = list(f.read(num_labels))
         return labels
