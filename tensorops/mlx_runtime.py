@@ -401,6 +401,9 @@ class MLXRuntime:
             except Exception:
                 result = resolved_inputs[0]
 
+        elif op_type == "PermuteOP" and parent_inputs:
+            dims = getattr(op, "dims", None)
+            return mx.transpose(parent_inputs[0], dims) if dims else parent_inputs[0]
         # MatMul (including with epilogue)
         elif "matmul" in kernel_type_str or "tiledmatmul" in kernel_type_str:
             a = resolved_inputs[0]
@@ -633,7 +636,10 @@ class MLXRuntime:
                                 raise ValueError(f"Tensor {id(p)} has no values")
 
                             # Convert to MLX
-                            arr = mx.array(val, dtype=mx.float32)
+                            if isinstance(val, (bytes, bytearray, memoryview)):
+                                arr = mx.array(np.frombuffer(val, dtype=np.float32))
+                            else:
+                                arr = mx.array(val, dtype=mx.float32)
 
                             # Ensure shape matches (crucial for ShapeOP parents)
                             if p.shape and arr.shape != tuple(p.shape):
@@ -654,7 +660,7 @@ class MLXRuntime:
 
                 current_result = self._execute_op(op, parent_inputs, op_idx)
 
-            # 3. Finalize result for this op
+            # 3. Finalise result for this op
             if current_result is None:
                 current_result = mx.zeros(op.shape or (1,), dtype=mx.float32)
 
@@ -733,10 +739,15 @@ class MLXRuntime:
         elif op_type == "Div" and len(parent_inputs) >= 2:
             x, y = _reshape_for_broadcast(parent_inputs[0], parent_inputs[1])
             return x / y
+        elif op_type == "GenericLog" and len(parent_inputs) >= 2:
+            return mx.log(parent_inputs[1]) / mx.log(parent_inputs[0])
         elif op_type == "Pow" and len(parent_inputs) >= 2:
             x, y = _reshape_for_broadcast(parent_inputs[0], parent_inputs[1])
             return x**y
 
+        elif op_type == "PermuteOP" and parent_inputs:
+            dims = getattr(op, "dims", None)
+            return mx.transpose(parent_inputs[0], dims) if dims else parent_inputs[0]
         # MatMul
         elif op_type == "MatMul" and len(parent_inputs) >= 2:
             a = parent_inputs[0]

@@ -10,8 +10,9 @@ tensorops_backend: Any = None
 TENSOROPS_BACKEND_AVAILABLE = False
 
 try:
-    import tensorops_backend as _tb
+    import importlib
 
+    _tb = importlib.import_module("tensorops.tensorops_backend")
     tensorops_backend = _tb
     TENSOROPS_BACKEND_AVAILABLE = True
 except ImportError:
@@ -27,7 +28,7 @@ if _backend == "mlx" or platform.system().lower() == "darwin":
 
         rt = MLXRuntime()
     except Exception as e:
-        print(f"Warning: Failed to initialize MLX runtime: {e}")
+        print(f"Warning: Failed to initialise MLX runtime: {e}")
         # Fall back to Rust backend if available
         if TENSOROPS_BACKEND_AVAILABLE and tensorops_backend is not None:
             rt = tensorops_backend.Runtime()

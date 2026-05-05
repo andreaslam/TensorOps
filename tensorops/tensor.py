@@ -11,7 +11,10 @@ from typing import Optional, cast
 import tensorops
 
 if tensorops.TENSOROPS_BACKEND_AVAILABLE:
-    import tensorops_backend
+    try:
+        from . import tensorops_backend
+    except ImportError:
+        tensorops_backend = tensorops.tensorops_backend
 
 from tensorops import rt
 
@@ -33,18 +36,24 @@ class Tensor(ABC):
 
         self.weight = weight
         self.grad_tensor = grad_tensor
-        self.device = device or TensorOpsDevice.OPENCL  # Default to OpenCL
+        import platform
+
+        self.device = device or (
+            TensorOpsDevice.APPLE
+            if platform.system() == "Darwin"
+            else TensorOpsDevice.OPENCL
+        )  # Default to OpenCL
         has_value = values is not None
-        assert xor(
-            has_value, is_op
-        ), f"Must be either a valued Tensor or an OP, got {values}"
+        assert xor(has_value, is_op), (
+            f"Must be either a valued Tensor or an OP, got {values}"
+        )
         self.is_op = is_op
         self.enable_fusion = enable_fusion
         # user decides whether the tensor can be fused or not, for example, if the user wants to see the value of a tensor, since the value of the tensor might not be guaranteed to be present due to kernel fusion not returning intermediate results. this guarantees that the tensor value is returned
         self.available_during_exec = False
         self.memview = None
         self._direct_input = None
-        self._shape = None  # Initialize _shape early to avoid AttributeError
+        self._shape = None  # Initialise _shape early to avoid AttributeError
         if values is not None:
             if isinstance(values, (float, int)):
                 self._values = [values]
@@ -55,9 +64,9 @@ class Tensor(ABC):
             else:
                 raise ValueError("Invalid subtype inside list!")
         else:
-            assert isinstance(
-                self, OP
-            ), "Tensor must either have value or is an instance of an OP class!"
+            assert isinstance(self, OP), (
+                "Tensor must either have value or is an instance of an OP class!"
+            )
             # OP can init with no values or grad but needs shape
             self._values = None
             self._shape = None
@@ -315,17 +324,66 @@ class Tensor(ABC):
     def add_grad(self, grad: Tensor) -> None:
         if grad is None:
             return
+        # If grad is a lazy op-expression, attempt to materialise it now so
+        # we accumulate concrete numeric buffers for leaf tensors. This
+        # avoids building long chains of unevaluated ops as `.grads` which
+        # are inconvenient for users and comparisons.
+        if getattr(grad, "is_op", False):
+            try:
+                _ = grad.compute()
+            except Exception:
+                pass
         if self.grads is None:
             self.grads = grad
         else:
-            self.grads = Add(self.grads, grad)
+            # If existing grads is a lazy op, try to materialise that too.
+            # If existing grads is a lazy op, try to materialise that too
+            # only when needed for concrete accumulation below.
+            if getattr(self.grads, "is_op", False):
+                try:
+                    _ = self.grads.compute()
+                except Exception:
+                    pass
+            # If both existing grads and incoming grad are concrete numeric
+            # tensors, accumulate eagerly to produce a concrete Tensor.
+            if not getattr(self.grads, "is_op", False) and not getattr(
+                grad, "is_op", False
+            ):
+                # Extract lists
+                def _to_list(t: Tensor):
+                    data = t.flat if getattr(t, "flat", None) is not None else t.values
+                    if data is None:
+                        return []
+                    if isinstance(data, (bytearray, memoryview, bytes)):
+                        mv = t._flat
+                        if mv is None:
+                            mv = memoryview(data)
+                            mv = mv.cast("f") if mv.format != "f" else mv
+                        return list(mv)
+                    return list(data)
+
+                a = _to_list(self.grads)
+                b = _to_list(grad)
+                # broadcasting support for scalar
+                if len(a) != len(b):
+                    if len(a) == 1:
+                        a = a * len(b)
+                    elif len(b) == 1:
+                        b = b * len(a)
+                summed = [float(x + y) for x, y in zip(a, b)]
+                newg = Tensor(summed, requires_grad=False, device=self.device)
+                if getattr(self.grads, "shape", None) is not None:
+                    newg.shape = self.grads.shape
+                self.grads = newg
+            else:
+                self.grads = Add(self.grads, grad)
 
     def reshape(self, shape) -> ShapeOP:
         # support -1 reshaping (unknown)
         shape = (shape,) if isinstance(shape, int) else shape
-        assert (
-            count := shape.count(-1)
-        ) <= 1, f"cannot reshape tensor to shape {shape}"
+        assert (count := shape.count(-1)) <= 1, (
+            f"cannot reshape tensor to shape {shape}"
+        )
         assert len(self) % abs(reduce(mul, shape)) == 0, f"invalid shape {shape}"
         dim_size = len(self) // abs(reduce(mul, shape))
         if count == 1:
@@ -822,14 +880,30 @@ class Tensor(ABC):
             return
 
         # Fast path: allocate the constant buffer in Rust (no Python list, no recursive flatten).
-        memview, _ = tensorops_backend.tensor_full(float(seed), list(target_shape))
-        grad_t = Tensor(
-            memview,
-            requires_grad=False,
-            grad_tensor=True,
-            device=self.device,
-        )
-        grad_t.shape = target_shape
+        if tensorops.TENSOROPS_BACKEND_AVAILABLE:
+            memview, _ = tensorops_backend.tensor_full(float(seed), list(target_shape))
+            grad_t = Tensor(
+                memview,
+                requires_grad=False,
+                grad_tensor=True,
+                device=self.device,
+            )
+            grad_t.shape = target_shape
+        else:
+            # Fallback path if backend is not available
+            def mk_list(shape, val):
+                if not shape:
+                    return [val]
+                if len(shape) == 1:
+                    return [val] * shape[0]
+                return [mk_list(shape[1:], val) for _ in range(shape[0])]
+
+            grad_t = Tensor(
+                mk_list(target_shape, float(seed)),
+                requires_grad=False,
+                grad_tensor=True,
+                device=self.device,
+            )
         grad_t._seed_value = seed
         self.grads = grad_t
         if cache is not None:
@@ -842,9 +916,9 @@ class Tensor(ABC):
         return ShapeOP(self, tuple(modify_shape))
 
     def unsqueeze(self, dim=0):
-        assert dim >= -1 and dim <= len(
-            self.shape
-        ), f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
+        assert dim >= -1 and dim <= len(self.shape), (
+            f"Cannot unsqueeze tensor shaped {self.shape} at dim {dim}, expected values from [-1,{len(self.shape)}]"
+        )
         modify_shape = list(self.shape)
         modify_shape.insert(dim, 1)
         return ShapeOP(self, tuple(modify_shape))
@@ -867,16 +941,16 @@ class Tensor(ABC):
 
     def __getitem__(self, idx):
         idx = (idx,) if isinstance(idx, int) else idx
-        assert len(idx) == len(
-            self.shape
-        ), "Index dimensions must match tensor dimensions"
+        assert len(idx) == len(self.shape), (
+            "Index dimensions must match tensor dimensions"
+        )
 
         flat_idx = 0
         stride = 1
         for i in range(len(self.shape) - 1, -1, -1):
-            assert (
-                idx[i] < self.shape[i]
-            ), f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
+            assert idx[i] < self.shape[i], (
+                f"Index {idx[i]} exceeds tensor dimension {self.shape[i]}"
+            )
             flat_idx += idx[i] * stride
             stride *= self.shape[i]
 
@@ -1013,7 +1087,28 @@ class Tensor(ABC):
         if ctx is not None:
             try:
                 if self in ctx.ops:
-                    ctx.forward(recompute=False)
+                    # Build a minimal temporary context that contains only the
+                    # upstream ops/operands required to materialise `self`.
+                    tmp_ctx = TensorContext(device=ctx.device)
+                    visited_ops = set()
+                    visited_leaves = set()
+
+                    def _collect_upstream_local(t):
+                        if not isinstance(t, OP):
+                            if t not in visited_leaves:
+                                visited_leaves.add(t)
+                                tmp_ctx.add_operands(t)
+                            return
+                        if t in visited_ops:
+                            return
+                        for p in getattr(t, "parents", []) or []:
+                            _collect_upstream_local(p)
+                        visited_ops.add(t)
+                        tmp_ctx.add_op(t)
+
+                    _collect_upstream_local(self)
+                    # Execute only the minimal upstream graph.
+                    tmp_ctx.forward(recompute=False)
                     _ = self.values
                     return self
             except Exception:
@@ -1126,8 +1221,7 @@ class OP(Tensor):
                 TensorContext.current_context.add_operands(operands)
 
     @abstractmethod
-    def get_grad(self) -> None:
-        ...
+    def get_grad(self) -> None: ...
 
     def __repr__(self) -> str:
         display = f"requires_grad={self.requires_grad}, weight={self.weight}, self.shape={self.shape}"
@@ -1168,7 +1262,7 @@ class ShapeOP(OP):
 
     def get_grad(self) -> None:
         if self.requires_grad and self.tensor1.requires_grad:
-            self.tensor1.add_grad(self.grads)
+            self.tensor1.add_grad(self.grads.reshape(self.tensor1.shape))
 
 
 class StopGrad(OP):
@@ -1367,9 +1461,9 @@ class BinaryOP(OP):
         t1_len = len(self.tensor1)
         t2_len = len(self.tensor2)
         self.broadcast = (t1_len != t2_len) and xor(t1_len == 1, t2_len == 1)
-        assert (t1_len == t2_len) or (
-            self.broadcast
-        ), f"Tensor lengths must match! Got {t1_len} and {t2_len}"
+        assert (t1_len == t2_len) or (self.broadcast), (
+            f"Tensor lengths must match! Got {t1_len} and {t2_len}"
+        )
 
         # The current Fusor does not support scalar-broadcast indexing for external
         # inputs (len-1 tensors). Fusing such ops would generate `v_in[gid]` reads
@@ -1399,7 +1493,7 @@ class Add(BinaryOP):
 
     def get_grad(self) -> None:
         if self.tensor1.requires_grad:
-            self.tensor1.add_grad(self.grads)
+            self.tensor1.add_grad(self.grads.reshape(self.tensor1.shape))
         if self.tensor2.requires_grad:
             self.tensor2.add_grad(self.grads)
 
@@ -1410,7 +1504,7 @@ class Sub(BinaryOP):
 
     def get_grad(self) -> None:
         if self.tensor1.requires_grad:
-            self.tensor1.add_grad(self.grads)
+            self.tensor1.add_grad(self.grads.reshape(self.tensor1.shape))
         if self.tensor2.requires_grad:
             self.tensor2.add_grad(self.grads * -1)
 
@@ -1459,9 +1553,9 @@ class GenericLog(BinaryOP):
     def __init__(self, tensor1, tensor2) -> None:
         # tensor1 is base (scalar or single-element tensor), tensor2 is input
         # Check before calling super().__init__ because BinaryOP will broadcast tensors
-        assert (
-            len(tensor1) == 1
-        ), f"Log base must be a scalar (single-element tensor), got length {len(tensor1)}"
+        assert len(tensor1) == 1, (
+            f"Log base must be a scalar (single-element tensor), got length {len(tensor1)}"
+        )
         super().__init__(tensor1, tensor2)
         self.base_value = self.tensor1
         self.scalar_operands = [self.base_value]
@@ -1489,6 +1583,17 @@ class UnaryOP(OP):
         self.parents = [self.tensor1]
 
         self.grads = None
+
+
+class Abs(UnaryOP):
+    def __init__(self, tensor1) -> None:
+        super().__init__(tensor1)
+
+    def get_grad(self) -> None:
+        if self.tensor1.value > 0:
+            self.tensor1.add_grad(self.grads.reshape(self.tensor1.shape))
+        elif self.tensor1.value < 0:
+            self.tensor1.add_grad(-self.grads)
 
 
 class Cos(UnaryOP):
@@ -1539,7 +1644,7 @@ class Tanh(UnaryOP):
         super().__init__(tensor1)
 
     def get_grad(self) -> None:
-        self.tensor1.add_grad(self.grads * (1 - (self.tensor1.tanh() ** 2)))
+        self.tensor1.add_grad(self.grads * (1 - (self**2)))
 
 
 class LeakyReLU(OP):
@@ -1561,9 +1666,9 @@ class LeakyReLU(OP):
         self.shape = self.tensor1.shape
         self.grads = None
 
-        assert (
-            len(self.tensor2) == 1
-        ), "Leaky gradient must be a scalar (single-element tensor)"
+        assert len(self.tensor2) == 1, (
+            "Leaky gradient must be a scalar (single-element tensor)"
+        )
         self.leaky_grad = self.tensor2
         self.scalar_operands = [self.leaky_grad]
 
@@ -1664,9 +1769,9 @@ def leaky_relu(x, leaky_grad=0.01) -> LeakyReLU:
 
 def _check_shape(target_shape, new_shape):
     new_shape = (new_shape,) if isinstance(new_shape, int) else new_shape
-    assert (
-        count := new_shape.count(-1)
-    ) <= 1, f"cannot reshape tensor to shape {new_shape}"
+    assert (count := new_shape.count(-1)) <= 1, (
+        f"cannot reshape tensor to shape {new_shape}"
+    )
     flat_size = reduce(mul, target_shape)
     assert flat_size % abs(flat_size) == 0, f"invalid shape {new_shape}"
     return count
@@ -1684,7 +1789,13 @@ class TensorContext:
 
         self.ops = []
         self.operands = []
-        self.device = device or TensorOpsDevice.OPENCL  # Default to OpenCL
+        import platform
+
+        self.device = device or (
+            TensorOpsDevice.APPLE
+            if platform.system() == "Darwin"
+            else TensorOpsDevice.OPENCL
+        )  # Default to OpenCL
 
         self.kernel_lookup = {}  # maps op object to index of the kernel it belongs to
         self.kernel_dependencies = {}
@@ -2149,6 +2260,33 @@ class TensorContext:
                     continue
                 if getattr(op, "grads", None) is None:
                     continue
+                # Ensure any parent tensors that may be referenced by the
+                # backward formula have their forward values materialised.
+                for parent in getattr(op, "parents", []) or []:
+                    # Unwrap ShapeOP/StopGrad views
+                    p = parent
+                    while (
+                        type(p).__name__ == "ShapeOP" or type(p).__name__ == "StopGrad"
+                    ):
+                        p = getattr(p, "tensor1", p)
+                    # If parent is an OP with pending kernel result, materialise its values.
+                    if (
+                        getattr(p, "is_op", False)
+                        and getattr(p, "_pending_kernel_result", None) is not None
+                    ):
+                        _ = p.values
+                    # If parent is an OP but has no concrete flat/values, try to compute it.
+                    if (
+                        getattr(p, "is_op", False)
+                        and getattr(p, "values", None) is None
+                        and getattr(p, "flat", None) is None
+                    ):
+                        try:
+                            _ = p.compute()
+                        except Exception:
+                            # best-effort: ignore failures here and let get_grad raise if truly needed
+                            pass
+
                 op.get_grad()
 
                 if debug_nonfinite and getattr(op, "grads", None) is not None:
@@ -2168,10 +2306,30 @@ class TensorContext:
                                 f"Non-finite grads reached parent {type(parent).__name__} from {type(op).__name__}"
                             )
 
-            # Backward is executed as a separate graph submission (execute_ops with lim_kernels).
-            # That means backward kernels cannot reference forward kernel outputs via
-            # LogicalInputSource (those kernels won't be re-executed). Materialise only the
-            # forward tensors that are actually referenced by the backward graph.
+            candidates = []
+            for t in self.operands:
+                if isinstance(t, Tensor):
+                    candidates.append(t)
+            for op2 in self.ops:
+                if not isinstance(op2, OP):
+                    continue
+                for p in getattr(op2, "parents", []) or []:
+                    if isinstance(p, Tensor):
+                        candidates.append(p)
+
+            for t in set(candidates):
+                g = getattr(t, "grads", None)
+                if g is None:
+                    continue
+                # If the grad is an op-expression, attempt to materialise it now.
+                if getattr(g, "is_op", False):
+                    try:
+                        _ = g.compute()
+                    except Exception:
+                        # Best-effort; if compute fails, leave as-is and allow
+                        # downstream code to handle it (will raise when accessed).
+                        pass
+
             def _unwrap_shapeop_parent(p):
                 while type(p).__name__ == "ShapeOP":
                     p = getattr(p, "tensor1", p)

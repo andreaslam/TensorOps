@@ -29,7 +29,7 @@ except ImportError as e:
 def main():
     try:
         runtime = Runtime()
-        print(f"✓ Initialized OpenCL Runtime: {runtime}")
+        print(f"✓ Initialised OpenCL Runtime: {runtime}")
 
         cache_dir = os.environ.get("TENSOROPS_CACHE_DIR")
         if not cache_dir:

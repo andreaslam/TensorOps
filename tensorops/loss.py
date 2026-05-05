@@ -12,8 +12,7 @@ class Loss(ABC):
         self.loss_value = None
 
     @abstractmethod
-    def loss(self, actual, target) -> Tensor:
-        ...
+    def loss(self, actual, target) -> Tensor: ...
 
     def __call__(self, actual, target) -> Tensor:
         return self.loss(actual, target)
@@ -41,18 +40,18 @@ class L1Loss(Loss):
             tensorops.tensor.Tensor(): The computed L1 loss value.
         """
         if isinstance(actual, list) and isinstance(target, list):
-            assert len(actual) == len(
-                target
-            ), "Actual and target lists must have the same length."
+            assert len(actual) == len(target), (
+                "Actual and target lists must have the same length."
+            )
             total_loss = Tensor(0.0, requires_grad=False)
             for actual_datapoint, target_datapoint in zip(actual, target):
                 total_loss += abs(actual_datapoint - target_datapoint)
             self.loss_value = total_loss / Tensor(len(actual), requires_grad=False)
             return self.loss_value
         else:
-            assert isinstance(actual, Tensor) and isinstance(
-                target, Tensor
-            ), f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
+            assert isinstance(actual, Tensor) and isinstance(target, Tensor), (
+                f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
+            )
             self.loss_value = abs(actual - target)
             return self.loss_value
 
@@ -73,9 +72,9 @@ class MSELoss(Loss):
             tensorops.tensor.Tensor(): The computed MSE loss value.
         """
         if isinstance(actual, list) and isinstance(target, list):
-            assert len(actual) == len(
-                target
-            ), "Actual and target lists must have the same length."
+            assert len(actual) == len(target), (
+                "Actual and target lists must have the same length."
+            )
 
             total_loss = Tensor(0.0, requires_grad=False, weight=False)
             for actual_datapoint, target_datapoint in zip(actual, target):
@@ -86,9 +85,9 @@ class MSELoss(Loss):
             )
             return self.loss_value
         else:
-            assert isinstance(actual, Tensor) and isinstance(
-                target, Tensor
-            ), f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
+            assert isinstance(actual, Tensor) and isinstance(target, Tensor), (
+                f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
+            )
             self.loss_value = (target - actual) ** 2
             return self.loss_value
 
@@ -109,9 +108,9 @@ class BCELoss(Loss):
             tensorops.tensor.Tensor(): The computed BCE loss value.
         """
         if isinstance(actual, list) and isinstance(target, list):
-            assert len(actual) == len(
-                target
-            ), "Actual and target lists must have the same length."
+            assert len(actual) == len(target), (
+                "Actual and target lists must have the same length."
+            )
 
             total_loss = Tensor(0.0, requires_grad=False, weight=False)
             eps = 1e-15
@@ -131,9 +130,9 @@ class BCELoss(Loss):
             )
             return self.loss_value
         else:
-            assert isinstance(actual, Tensor) and isinstance(
-                target, Tensor
-            ), f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
+            assert isinstance(actual, Tensor) and isinstance(target, Tensor), (
+                f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
+            )
 
             eps = 1e-15
             one_target = ones(target.shape)
@@ -166,12 +165,12 @@ class CrossEntropyLoss(Loss):
         Returns:
             Tensor: Scalar mean cross-entropy over the batch.
         """
-        assert isinstance(logits, Tensor) and isinstance(
-            target, Tensor
-        ), f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
-        assert (
-            logits.shape is not None and len(logits.shape) >= 2
-        ), "CrossEntropyLoss expects logits with shape (batch, num_classes)"
+        assert isinstance(logits, Tensor) and isinstance(target, Tensor), (
+            f"Values passed into {type(self).__name__}.loss() must be instances of tensorops.Tensor"
+        )
+        assert logits.shape is not None and len(logits.shape) >= 2, (
+            "CrossEntropyLoss expects logits with shape (batch, num_classes)"
+        )
 
         batch_size, num_classes = logits.shape[0], logits.shape[-1]
 
@@ -186,7 +185,7 @@ class CrossEntropyLoss(Loss):
             # be filled with real values during forward pass via .values assignment.
             raw = target.values
 
-            # If target is a placeholder (all zeros or uninitialized), create one-hot placeholder
+            # If target is a placeholder (all zeros or uninitialised), create one-hot placeholder
             if raw is None or (
                 isinstance(raw, list)
                 and all(
@@ -201,16 +200,16 @@ class CrossEntropyLoss(Loss):
                 )
             else:
                 # Real data: convert class indices to one-hot
-                assert (
-                    len(raw) == batch_size
-                ), f"Target length {len(raw)} does not match batch size {batch_size}"
+                assert len(raw) == batch_size, (
+                    f"Target length {len(raw)} does not match batch size {batch_size}"
+                )
 
                 one_hot_rows: list[list[float]] = []
                 for lbl in raw:
                     idx = int(lbl if not isinstance(lbl, list) else lbl[0])
-                    assert (
-                        0 <= idx < num_classes
-                    ), f"Class index {idx} out of range for {num_classes} classes"
+                    assert 0 <= idx < num_classes, (
+                        f"Class index {idx} out of range for {num_classes} classes"
+                    )
                     row = [0.0] * num_classes
                     row[idx] = 1.0
                     one_hot_rows.append(row)

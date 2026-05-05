@@ -7,9 +7,10 @@ import random
 import struct
 from urllib.request import urlretrieve
 
+import tensorops
 from tensorops.loss import CrossEntropyLoss
 from tensorops.optim import AdamW
-from tensorops.tensor import Tanh, Tensor, TensorContext
+from tensorops.tensor import Tensor, TensorContext, Tanh
 from tensorops.utils.models import SequentialModel
 from tensorops.utils.tensorutils import PlotterUtil
 
@@ -40,15 +41,15 @@ def extract_images(filepath):
     with gzip.open(filepath, "rb") as f:
         header = f.read(16)
         magic_number, num_images, rows, cols = struct.unpack(">IIII", header)
-        assert (
-            magic_number == 2051
-        ), f"Invalid magic number {magic_number} in image file."
+        assert magic_number == 2051, (
+            f"Invalid magic number {magic_number} in image file."
+        )
 
         images = []
         for _ in range(num_images):
             image = list(f.read(rows * cols))
-            # Normalize to mean 0, std 1 (approx)
-            image = [(x / 255.0 - 0.1307) / 0.3081 for x in image]
+            # Normalise to match PyTorch (divided by 255)
+            image = [x / 255.0 for x in image]
             images.append(image)
         return images
 
@@ -58,9 +59,9 @@ def extract_labels(filepath):
     with gzip.open(filepath, "rb") as f:
         header = f.read(8)
         magic_number, num_labels = struct.unpack(">II", header)
-        assert (
-            magic_number == 2049
-        ), f"Invalid magic number {magic_number} in label file."
+        assert magic_number == 2049, (
+            f"Invalid magic number {magic_number} in label file."
+        )
 
         labels = list(f.read(num_labels))
         return labels
@@ -122,7 +123,7 @@ class MNISTModel(SequentialModel):
             return model_inputs
 
 
-with TensorContext() as tc:
+with TensorContext(device=tensorops.device.TensorOpsDevice.APPLE) as tc:
     X_train, y_train, X_test, y_test = (
         Tensor(train_images, requires_grad=False),
         Tensor(train_labels, requires_grad=False),

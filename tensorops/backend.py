@@ -5,7 +5,13 @@ from functools import reduce
 from operator import mul
 from typing import Dict, List, Tuple, Union
 
-import tensorops_backend
+import tensorops
+
+if tensorops.TENSOROPS_BACKEND_AVAILABLE:
+    try:
+        from . import tensorops_backend
+    except ImportError:
+        tensorops_backend = tensorops.tensorops_backend
 
 from tensorops.tensor import *
 

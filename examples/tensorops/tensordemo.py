@@ -4,7 +4,8 @@
 import cProfile
 import random
 import time
-from tensorops.tensor import Tensor, TensorContext, forward
+
+from tensorops.tensor import Tensor, TensorContext
 
 
 def main():
@@ -28,7 +29,7 @@ def main():
         h = g.tanh()
         h.reshape((n**2))
         i = h + e
-        forward(nc.ops)
+        nc.forward()
         i.seed_grad(1)
         # visualise_graph(nc.ops, display=False)
         end = time.time()
