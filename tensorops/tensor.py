@@ -1299,10 +1299,14 @@ class StopGrad(OP):
 class ExpandOP(OP):
     def __init__(self, tensor1: Tensor, new_shape) -> None:
         super().__init__([tensor1], True if tensor1.requires_grad else False, False)
+        from operator import mul
+        from functools import reduce
         self.parents = [tensor1]
         self.tensor1 = tensor1
         self.src_shape = tensor1.shape
         self.shape = tuple(new_shape)
+        # expand capacity
+        self.capacity = reduce(mul, self.shape, 1)
         # Expand is executed as a dedicated custom OpenCL kernel; keep it out of fusion.
         self.fusable_op = False
 

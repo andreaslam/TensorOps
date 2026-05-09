@@ -765,9 +765,14 @@ class MLXRuntime:
 
         # Activation functions
         elif op_type == "LeakyReLU" and parent_inputs:
-            alpha = getattr(op, "leaky_grad", 0.01)
+            if len(parent_inputs) > 1:
+                alpha = parent_inputs[1]
+            else:
+                alpha = getattr(op, "leaky_grad", 0.01)
+            
             if isinstance(alpha, (list, tuple)):
                 alpha = alpha[0] if alpha else 0.01
+            
             x = parent_inputs[0]
             return mx.where(x > 0, x, alpha * x)
 

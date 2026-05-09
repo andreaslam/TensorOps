@@ -10,7 +10,7 @@ from urllib.request import urlretrieve
 import tensorops
 from tensorops.loss import CrossEntropyLoss
 from tensorops.optim import AdamW
-from tensorops.tensor import Tensor, TensorContext, Tanh
+from tensorops.tensor import Tensor, TensorContext, LeakyReLU
 from tensorops.utils.models import SequentialModel
 from tensorops.utils.tensorutils import PlotterUtil
 
@@ -94,7 +94,7 @@ class MNISTModel(SequentialModel):
         num_hidden_nodes: int,
         loss_criterion,
         seed: int | None = None,
-        activation_function=Tanh,
+        activation_function=LeakyReLU,
         *,
         batch_size: int = 1,
     ) -> None:
@@ -134,24 +134,22 @@ with TensorContext(device=tensorops.device.TensorOpsDevice.APPLE) as tc:
     print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
 
     # impl model
-    BATCH_SIZE = 32
-    N_EPOCHS = 100
+    BATCH_SIZE = 256
+    N_EPOCHS = 5
 
     model = MNISTModel(
-        1,
-        128,
+        2,
+        256,
         CrossEntropyLoss(),
         seed=42,
         batch_size=BATCH_SIZE,
-        activation_function=Tanh,
+        activation_function=LeakyReLU,
     )
-    optim = AdamW(model.get_weights(), lr=1e-4, weight_decay=1e-4)
+    optim = AdamW(model.get_weights(), lr=2e-4)
     # Enable gradient clipping to stabilise updates
     optim.grad_clip_norm = 0.5
     optim.grad_clip_value = 0.5
     model.train()
-
-    loss_plot = PlotterUtil()
 
     # Helper to create fixed-size batches (graph uses a fixed batch_size)
     def _one_hot(label: int, num_classes: int = 10) -> list[float]:
@@ -192,70 +190,42 @@ with TensorContext(device=tensorops.device.TensorOpsDevice.APPLE) as tc:
             )
 
     for epoch in range(N_EPOCHS):
-        epoch_loss = 0.0
-        n_batches = 0
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch + 1}")
 
-        for X_batch, y_batch in get_batches(X_train, y_train, BATCH_SIZE):
+        for id_batch, (X_batch, y_batch) in enumerate(get_batches(X_train, y_train, BATCH_SIZE)):
             model.zero_grad()
 
-            # Wire inputs/targets into the existing graph without creating new ops
             logits = model(X_batch, execute=False)
             assert model.targets is not None
             model.targets.values = y_batch.values
 
-            # Re-run the fixed graph with updated data
             model.context.forward(recompute=True)
-
-            # Debug logits and guard against non-finite values
-            vals = logits.flat
-            import numpy as np
-
-            v = np.array(vals)
-            print(f"Logits: min={v.min()}, max={v.max()}, mean={v.mean()}")
-            if not np.isfinite(v).all():
-                print("Skipping batch due to non-finite logits")
-                continue
-
-            # Loss is part of the pre-built graph; reuse it to avoid graph bloat
             loss = model.loss
-
             model.backward()
-
-            # Skip update if loss blew up or produced bad grads
-            loss_val = loss.item()
-            if not np.isfinite(loss_val):
-                print("Skipping batch due to non-finite loss")
-                model.zero_grad()
-                continue
-
-            if _has_nonfinite_grad(model.get_weights()):
-                print("Skipping batch due to non-finite gradients")
-                model.zero_grad()
-                continue
-
             optim.step()
 
-            # Clip weights in-place to keep logits bounded
-            for p in model.get_weights():
-                src = p.flat if getattr(p, "flat", None) is not None else p.values
-                if src is None:
-                    continue
-                # Handle NaNs in weights by resetting to 0.0 or small random values
-                # (If weights are NaN, the model is broken, but we try to recover)
-                clipped = []
-                for x in src:
-                    val = float(x)
-                    if not np.isfinite(val):
-                        clipped.append(0.0)
-                    else:
-                        clipped.append(max(-0.5, min(0.5, val)))
-                p.values = clipped
+            if id_batch % 100 == 0:
+                loss_value = loss.item()
+                print(f"Loss: {loss_value:.4f}")
 
-            batch_loss = loss_val
-            epoch_loss += batch_loss
-            print(f"Batch loss: {batch_loss:.4f}")
-            n_batches += 1
+    correct = 0
+    total = 0
+    import numpy as np
+    
+    # Disable dropout/etc if eval existed, here just forward pass
+    for X_batch, y_batch in get_batches(X_test, y_test, BATCH_SIZE):
+        logits = model(X_batch, execute=False)
+        model.context.forward(recompute=True)
+        
+        vals = np.array(logits.flat)
+        vals = vals.reshape((BATCH_SIZE, 10))
+        predicted = np.argmax(vals, axis=1)
+        
+        y_vals = np.array(y_batch.flat).reshape((BATCH_SIZE, 10))
+        target = np.argmax(y_vals, axis=1)
+        
+        correct += np.sum(predicted == target)
+        total += len(target)
 
-        avg_loss = epoch_loss / n_batches
-        loss_plot.register_datapoint(avg_loss, "MNIST-TensorOps")
-        print(f"Epoch {epoch + 1}: avg_loss={avg_loss:.4f}")
+    print(f"Test Accuracy: {correct / total:.4f}")
