@@ -207,12 +207,15 @@ impl LogicalInputSource {
 pub struct DirectInput {
     #[pyo3(get)]
     pub data: Vec<f32>,
+    #[pyo3(get)]
+    pub cacheable: bool,
 }
 
 #[pymethods]
 impl DirectInput {
     #[new]
-    fn new(data: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (data, cacheable=true))]
+    fn new(data: &Bound<'_, PyAny>, cacheable: bool) -> PyResult<Self> {
         // Try to use buffer protocol for fast copy
         if let Ok(buffer) = data.extract::<PyBuffer<f32>>() {
             if buffer.is_c_contiguous() {
@@ -224,6 +227,7 @@ impl DirectInput {
                     };
                     return Ok(Self {
                         data: f32_slice.to_vec(),
+                        cacheable,
                     });
                 }
             }
@@ -231,7 +235,10 @@ impl DirectInput {
 
         // Fallback to iterator (slow for large lists)
         let vec: Vec<f32> = data.extract()?;
-        Ok(Self { data: vec })
+        Ok(Self {
+            data: vec,
+            cacheable,
+        })
     }
     fn __repr__(&self) -> String {
         format!("DirectInput(len={})", self.data.len())
@@ -407,7 +414,7 @@ impl KernelTensorOps {
                         } else {
                             let buf = Buffer::<f32>::builder()
                                 .queue(queue.clone())
-                                .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                                .flags(OclFlags::MEM_READ_WRITE | OclFlags::MEM_COPY_HOST_PTR)
                                 .len(data.len())
                                 .copy_host_slice(data.as_slice())
                                 .build()
@@ -465,7 +472,7 @@ impl KernelTensorOps {
                             } else {
                                 let buf = Buffer::<f32>::builder()
                                     .queue(queue.clone())
-                                    .flags(OclFlags::MEM_READ_ONLY | OclFlags::MEM_COPY_HOST_PTR)
+                                    .flags(OclFlags::MEM_READ_WRITE | OclFlags::MEM_COPY_HOST_PTR)
                                     .len(data.len())
                                     .copy_host_slice(data.as_slice())
                                     .build()
@@ -505,6 +512,16 @@ impl KernelTensorOps {
                 {
                     scalar_inputs.push(input_ocl_buffers[0].len() as f32);
                     scalar_inputs.push(input_ocl_buffers[1].len() as f32);
+
+                    for (i, buf) in input_ocl_buffers.iter().enumerate() {
+                        let len = buf.len();
+                        if len != 1 && len != inferred {
+                            return Err(PyValueError::new_err(format!(
+                                "Kernel {}: Input buffer {} length mismatch: expected {} or 1, got {}",
+                                self.kernel_id, i, inferred, len
+                            )));
+                        }
+                    }
                 }
 
                 // Special handling for VecPow: pass base buffer length as scalar for broadcasting

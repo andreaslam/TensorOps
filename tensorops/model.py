@@ -96,7 +96,9 @@ class Model(ABC):
         if self.model_layers:
             assert (
                 num_input_tensors == self.model_output_layer.num_output_tensors  # type: ignore
-            ), f"Layer shapes invalid! Expected current layer shape to be ({self.model_layers[-1].num_output_tensors}, n) from previous layer shape ({self.model_layers[-1].num_input_tensors}, {self.model_layers[-1].num_output_tensors})"
+            ), (
+                f"Layer shapes invalid! Expected current layer shape to be ({self.model_layers[-1].num_output_tensors}, n) from previous layer shape ({self.model_layers[-1].num_input_tensors}, {self.model_layers[-1].num_output_tensors})"
+            )
         if self._prev_layer is None:  # initialise with empty batch tensor
             self._prev_layer = Tensor(
                 [[0.0] * num_input_tensors for _ in range(self.batch_size)],
@@ -141,11 +143,11 @@ class Model(ABC):
         for weight in self.weights:
             weight.requires_grad = True
 
-    def backward(self) -> None:
+    def backward(self, *, accumulate: bool = False, device_optim=None) -> None:
         """
         Performs the backward pass for the current model. Wrapper function for `tensorops.TensorContext.backward()`
         """
-        self.context.backward()
+        self.context.backward(accumulate=accumulate, device_optim=device_optim)
 
     def zero_grad(self) -> None:
         """
@@ -271,13 +273,13 @@ class Layer:
         if self.seed:
             random.seed(self.seed)
         if output_weights is not None:
-            assert (
-                len(output_weights) == self.num_output_tensors
-            ), "Length of output_weights must match num_output_tensors."
+            assert len(output_weights) == self.num_output_tensors, (
+                "Length of output_weights must match num_output_tensors."
+            )
             num_weights = self.num_input_tensors * self.num_output_tensors
-            assert (
-                sum(len(x) for x in output_weights) == num_weights
-            ), "Each weight list must match num_input_tensors."
+            assert sum(len(x) for x in output_weights) == num_weights, (
+                "Each weight list must match num_input_tensors."
+            )
         else:
             # He initialization (uniform)
             limit = math.sqrt(6 / num_input_tensors)
@@ -291,9 +293,9 @@ class Layer:
                 (num_input_tensors, num_output_tensors)
             )
         if output_bias is not None:
-            assert (
-                len(output_bias) == self.num_output_tensors
-            ), "Length of output_bias must match num_output_tensors."
+            assert len(output_bias) == self.num_output_tensors, (
+                "Length of output_bias must match num_output_tensors."
+            )
         else:
             # Bias is stored as (1, out) and expanded to (batch, out) when used.
             output_bias = Tensor([[0.0 for _ in range(self.num_output_tensors)]])

@@ -125,7 +125,7 @@ if __name__ == "__main__":
     model = MNISTModel(2, 256).to(device)
 
     model.train()
-    BATCH_SIZE = 256
+    BATCH_SIZE = 1024
     N_EPOCHS = 100
 
     dataset = TensorDataset(X_train, y_train)

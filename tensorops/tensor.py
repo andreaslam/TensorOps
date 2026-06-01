@@ -143,7 +143,7 @@ class Tensor(ABC):
         if data is None:
             raise ValueError("Cannot create DirectInput for tensor with no host data")
 
-        self._direct_input = tensorops_backend.DirectInput(data)
+        self._direct_input = tensorops_backend.DirectInput(data, cacheable=self.weight)
         return self._direct_input
 
     @property
@@ -1299,8 +1299,9 @@ class StopGrad(OP):
 class ExpandOP(OP):
     def __init__(self, tensor1: Tensor, new_shape) -> None:
         super().__init__([tensor1], True if tensor1.requires_grad else False, False)
-        from operator import mul
         from functools import reduce
+        from operator import mul
+
         self.parents = [tensor1]
         self.tensor1 = tensor1
         self.src_shape = tensor1.shape
@@ -1832,6 +1833,9 @@ class TensorContext:
         # Used by execute_ops() to limit LogicalInputSource wiring.
         self._exec_lim_kernels = 0
 
+        # Optional fusion disable flag (used for stability on some backends).
+        self._disable_fusion = False
+
         # Used by __enter__/__exit__
         self.prev_context = None
 
@@ -2055,6 +2059,7 @@ class TensorContext:
                 # Disable generic elementwise fusion on Apple/MLX runtime: MLXRuntime doesn't execute custom fused kernels.
                 # Force each op to be emitted as its own predefined kernel on APPLE.
                 or not op.fusable_op
+                or self._disable_fusion
                 or self.device == TensorOpsDevice.APPLE
                 or any(parent in self.completed_kernels for parent in op_parents)
             ):
@@ -2090,7 +2095,9 @@ class TensorContext:
             # 2. fuse Kernel: If all OP parents belong to the *same* single kernel.
             # Skip fusion on Apple/MLX to ensure MLXRuntime maps predefined kernels correctly.
             elif (
-                len(parent_kernel_indices) == 1 and self.device != TensorOpsDevice.APPLE
+                len(parent_kernel_indices) == 1
+                and self.device != TensorOpsDevice.APPLE
+                and not self._disable_fusion
             ):
                 target_kernel_idx = parent_kernel_indices.pop()
                 if target_kernel_idx not in self.locked_kernels:
@@ -2196,7 +2203,7 @@ class TensorContext:
         finally:
             TensorContext.current_context = prev_ctx
 
-    def backward(self, *, accumulate: bool = False):
+    def backward(self, *, accumulate: bool = False, device_optim=None):
         prev_ctx = TensorContext.current_context
         TensorContext.current_context = self
         try:
@@ -2208,6 +2215,10 @@ class TensorContext:
                 "",
                 "0",
             )
+            if device_optim is not None and debug_nonfinite:
+                raise RuntimeError(
+                    "Non-finite grad checks are not supported with device optimizers"
+                )
 
             def _tensor_has_nonfinite(t: Tensor) -> bool:
                 src = t.flat if getattr(t, "flat", None) is not None else t.values
@@ -2264,32 +2275,34 @@ class TensorContext:
                     continue
                 if getattr(op, "grads", None) is None:
                     continue
-                # Ensure any parent tensors that may be referenced by the
-                # backward formula have their forward values materialised.
-                for parent in getattr(op, "parents", []) or []:
-                    # Unwrap ShapeOP/StopGrad views
-                    p = parent
-                    while (
-                        type(p).__name__ == "ShapeOP" or type(p).__name__ == "StopGrad"
-                    ):
-                        p = getattr(p, "tensor1", p)
-                    # If parent is an OP with pending kernel result, materialise its values.
-                    if (
-                        getattr(p, "is_op", False)
-                        and getattr(p, "_pending_kernel_result", None) is not None
-                    ):
-                        _ = p.values
-                    # If parent is an OP but has no concrete flat/values, try to compute it.
-                    if (
-                        getattr(p, "is_op", False)
-                        and getattr(p, "values", None) is None
-                        and getattr(p, "flat", None) is None
-                    ):
-                        try:
-                            _ = p.compute()
-                        except Exception:
-                            # best-effort: ignore failures here and let get_grad raise if truly needed
-                            pass
+                # Only materialise forward values for ops that need them
+                # (e.g. Max/Min masks or LeakyReLU sign checks).
+                if isinstance(op, (Max, Min, LeakyReLU, Abs)):
+                    for parent in getattr(op, "parents", []) or []:
+                        # Unwrap ShapeOP/StopGrad views
+                        p = parent
+                        while (
+                            type(p).__name__ == "ShapeOP"
+                            or type(p).__name__ == "StopGrad"
+                        ):
+                            p = getattr(p, "tensor1", p)
+                        # If parent is an OP with pending kernel result, materialise its values.
+                        if (
+                            getattr(p, "is_op", False)
+                            and getattr(p, "_pending_kernel_result", None) is not None
+                        ):
+                            _ = p.values
+                        # If parent is an OP but has no concrete flat/values, try to compute it.
+                        if (
+                            getattr(p, "is_op", False)
+                            and getattr(p, "values", None) is None
+                            and getattr(p, "flat", None) is None
+                        ):
+                            try:
+                                _ = p.compute()
+                            except Exception:
+                                # best-effort: ignore failures here and let get_grad raise if truly needed
+                                pass
 
                 op.get_grad()
 
@@ -2310,29 +2323,35 @@ class TensorContext:
                                 f"Non-finite grads reached parent {type(parent).__name__} from {type(op).__name__}"
                             )
 
-            candidates = []
-            for t in self.operands:
-                if isinstance(t, Tensor):
-                    candidates.append(t)
-            for op2 in self.ops:
-                if not isinstance(op2, OP):
-                    continue
-                for p in getattr(op2, "parents", []) or []:
-                    if isinstance(p, Tensor):
-                        candidates.append(p)
+            eager_grads = (
+                False
+                if device_optim is not None
+                else (os.getenv("TENSOROPS_EAGER_GRADS") not in (None, "", "0"))
+            )
+            if eager_grads:
+                candidates = []
+                for t in self.operands:
+                    if isinstance(t, Tensor):
+                        candidates.append(t)
+                for op2 in self.ops:
+                    if not isinstance(op2, OP):
+                        continue
+                    for p in getattr(op2, "parents", []) or []:
+                        if isinstance(p, Tensor):
+                            candidates.append(p)
 
-            for t in set(candidates):
-                g = getattr(t, "grads", None)
-                if g is None:
-                    continue
-                # If the grad is an op-expression, attempt to materialise it now.
-                if getattr(g, "is_op", False):
-                    try:
-                        _ = g.compute()
-                    except Exception:
-                        # Best-effort; if compute fails, leave as-is and allow
-                        # downstream code to handle it (will raise when accessed).
-                        pass
+                for t in set(candidates):
+                    g = getattr(t, "grads", None)
+                    if g is None:
+                        continue
+                    # If the grad is an op-expression, attempt to materialise it now.
+                    if getattr(g, "is_op", False):
+                        try:
+                            _ = g.compute()
+                        except Exception:
+                            # Best-effort; if compute fails, leave as-is and allow
+                            # downstream code to handle it (will raise when accessed).
+                            pass
 
             def _unwrap_shapeop_parent(p):
                 while type(p).__name__ == "ShapeOP":
@@ -2355,7 +2374,20 @@ class TensorContext:
                 _ = t.values
 
             # Execute backward-only kernels.
-            self.execute_ops(backward_graph_start, backward_kernel_start)
+            prev_disable_fusion = self._disable_fusion
+            if device_optim is not None:
+                self._disable_fusion = True
+            try:
+                if device_optim is not None:
+                    self.execute_ops_with_device_updates(
+                        backward_graph_start,
+                        backward_kernel_start,
+                        device_optim,
+                    )
+                else:
+                    self.execute_ops(backward_graph_start, backward_kernel_start)
+            finally:
+                self._disable_fusion = prev_disable_fusion
 
             if debug_nonfinite:
                 # After backward kernels have executed, grads should be materialised.
@@ -2553,6 +2585,40 @@ class TensorContext:
             runtime = get_runtime_for_device(self.device)
             res = runtime.execute_graph(valid_kernels)
             # order of kernels returned from rt is the same as the order given to rt
+            self.distribute_results(res, lim_kernels)
+        finally:
+            self._exec_lim_kernels = 0
+            self._exec_lim_kernels = 0
+
+    def execute_ops_with_device_updates(self, lim=0, lim_kernels=0, device_optim=None):
+        from . import get_runtime_for_device
+        from .device import TensorOpsDevice
+
+        if device_optim is None:
+            return self.execute_ops(lim, lim_kernels)
+
+        self.rewrite()
+        self._exec_lim_kernels = lim_kernels
+        try:
+            if self.device == TensorOpsDevice.APPLE:
+                raise RuntimeError("Device optimizers are not supported on MLX")
+
+            self.finalise(lim, lim_kernels)
+            valid_kernels = [
+                k for k in self.kernels_objs[lim_kernels:] if k is not None
+            ]
+
+            updates, skip_readback = device_optim.build_device_updates(self)
+
+            runtime = get_runtime_for_device(self.device)
+            if updates:
+                res = runtime.execute_graph_with_updates(
+                    valid_kernels,
+                    updates,
+                    skip_readback,
+                )
+            else:
+                res = runtime.execute_graph(valid_kernels)
             self.distribute_results(res, lim_kernels)
         finally:
             self._exec_lim_kernels = 0

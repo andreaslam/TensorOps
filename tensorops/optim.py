@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import pickle
 from typing import Any
 
@@ -24,7 +25,11 @@ def _numeric_grad_for_param(param: Tensor) -> list[float] | None:
         else:
             g_list = list(g_src)
 
-    p_vals = param.values
+    p_vals = (
+        list(param.flat)
+        if getattr(param, "flat", None) is not None
+        else list(param.values)
+    )
     if len(g_list) != len(p_vals):
         if len(g_list) == 1:
             return [g_list[0]] * len(p_vals)
@@ -147,9 +152,7 @@ class Adam(Optim):
             else:
                 self.m[param] = [
                     self.betas[0] * m + (1 - self.betas[0]) * g
-                    for m, g in zip(
-                        self.m[param], g_t
-                    )  # pyright: ignore[reportArgumentType]
+                    for m, g in zip(self.m[param], g_t)  # pyright: ignore[reportArgumentType]
                 ]
 
             # Update biased second raw moment estimate
@@ -158,9 +161,7 @@ class Adam(Optim):
             else:
                 self.v[param] = [
                     self.betas[1] * v + (1 - self.betas[1]) * (g**2)
-                    for v, g in zip(
-                        self.v[param], g_t
-                    )  # pyright: ignore[reportArgumentType]
+                    for v, g in zip(self.v[param], g_t)  # pyright: ignore[reportArgumentType]
                 ]
 
             # Bias-corrected estimates
@@ -175,9 +176,7 @@ class Adam(Optim):
                 else:
                     self.v_hat_max[param] = [
                         max(v_max, v)
-                        for v_max, v in zip(
-                            self.v_hat_max[param], v_hat_t
-                        )  # pyright: ignore[reportArgumentType]
+                        for v_max, v in zip(self.v_hat_max[param], v_hat_t)  # pyright: ignore[reportArgumentType]
                     ]
                 denom = [
                     math.sqrt(v_max) + self.eps
@@ -285,6 +284,88 @@ class AdamW(Optim):
                 for v, m, d in zip(p_vals, m_hat_t, denom)
             ]
             param.values = updated
+
+
+class AdamWDevice(Optim):
+    def __init__(
+        self,
+        parameters: list[Tensor],
+        lr: float = 1e-3,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+    ) -> None:
+        super().__init__(lr, maximise=False, weight_decay=weight_decay)
+        self.parameters = parameters
+        self.t = 0
+        self.betas = betas
+        self.eps = eps
+
+    def build_device_updates(self, ctx) -> tuple[list[tuple], bool]:
+        if self.grad_clip_norm is not None or self.grad_clip_value is not None:
+            raise ValueError("Device AdamW does not support grad clipping")
+
+        cache_enabled = os.getenv("TENSOROPS_DIRECT_INPUT_CACHE", "1").lower()
+        if cache_enabled in ("0", "false", "no", "off"):
+            raise RuntimeError(
+                "Device AdamW requires DirectInput cache. Set TENSOROPS_DIRECT_INPUT_CACHE=1"
+            )
+
+        min_len_env = os.getenv("TENSOROPS_DIRECT_INPUT_CACHE_MIN_LEN", "128")
+        try:
+            min_len = int(min_len_env)
+        except ValueError:
+            min_len = 128
+
+        self.t += 1
+        bias_c1 = 1.0 - (self.betas[0] ** self.t)
+        bias_c2 = 1.0 - (self.betas[1] ** self.t)
+
+        updates: list[tuple] = []
+        for param in filter(lambda p: p.requires_grad, self.parameters):
+            actual_param = param
+            while type(actual_param).__name__ in ("ShapeOP", "StopGrad"):
+                actual_param = getattr(actual_param, "tensor1", actual_param)
+
+            grad = getattr(param, "grads", None)
+            if grad is None or not getattr(grad, "is_op", False):
+                continue
+
+            kernel_id = ctx.kernel_lookup.get(grad)
+            if kernel_id is None:
+                continue
+            if kernel_id < getattr(ctx, "_exec_lim_kernels", 0):
+                continue
+            output_idx = None
+            if kernel_id < len(ctx._kernel_output_index):
+                output_idx = ctx._kernel_output_index[kernel_id].get(grad)
+            if output_idx is None:
+                continue
+
+            param_len = len(actual_param)
+            if param_len < min_len:
+                raise RuntimeError(
+                    "Device AdamW requires DirectInput caching for all params. "
+                    "Set TENSOROPS_DIRECT_INPUT_CACHE_MIN_LEN=1"
+                )
+
+            weight_input = actual_param._get_direct_input()
+            updates.append(
+                (
+                    weight_input,
+                    kernel_id,
+                    output_idx,
+                    float(self.lr),
+                    float(self.betas[0]),
+                    float(self.betas[1]),
+                    float(self.eps),
+                    float(self.weight_decay),
+                    float(bias_c1),
+                    float(bias_c2),
+                )
+            )
+
+        return updates, True
 
 
 class SGD(Optim):

@@ -219,7 +219,9 @@ class CrossEntropyLoss(Loss):
 
         # Use the built-in stable softmax and take log to obtain log-probabilities
         probs = logits.softmax(axis=1)
-        log_probs = probs.log()
+        # Add epsilon to prevent log(0) producing -inf
+        eps = Tensor(1e-15, requires_grad=False)
+        log_probs = (probs + eps).log()
 
         per_sample = (target_one_hot * log_probs).sum(axis=1) * Tensor(
             -1.0, requires_grad=False

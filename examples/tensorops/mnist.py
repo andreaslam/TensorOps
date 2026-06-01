@@ -7,12 +7,14 @@ import random
 import struct
 from urllib.request import urlretrieve
 
-import tensorops
+# Device optimizer requires DirectInput caching for all params (including biases).
+os.environ.setdefault("TENSOROPS_DIRECT_INPUT_CACHE", "1")
+os.environ.setdefault("TENSOROPS_DIRECT_INPUT_CACHE_MIN_LEN", "1")
+
 from tensorops.loss import CrossEntropyLoss
-from tensorops.optim import AdamW
-from tensorops.tensor import Tensor, TensorContext, LeakyReLU
+from tensorops.optim import AdamWDevice
+from tensorops.tensor import LeakyReLU, Tensor
 from tensorops.utils.models import SequentialModel
-from tensorops.utils.tensorutils import PlotterUtil
 
 MNIST_URLS = {
     "train_images": "https://ossci-datasets.s3.amazonaws.com/mnist/train-images-idx3-ubyte.gz",
@@ -48,8 +50,6 @@ def extract_images(filepath):
         images = []
         for _ in range(num_images):
             image = list(f.read(rows * cols))
-            # Normalise to match PyTorch (divided by 255)
-            image = [x / 255.0 for x in image]
             images.append(image)
         return images
 
@@ -84,7 +84,28 @@ def load_mnist():
     return (train_images, train_labels), (test_images, test_labels)
 
 
-(train_images, train_labels), (test_images, test_labels) = load_mnist()
+def _normalise_images(images):
+    return [[x / 255.0 for x in image] for image in images]
+
+
+def init_layer_params(layer, rng):
+    """Match the PyTorch init_network_params helper (uniform -1..1)."""
+    weights_out_in = [
+        [rng.uniform(-1.0, 1.0) for _ in range(layer.num_input_tensors)]
+        for _ in range(layer.num_output_tensors)
+    ]
+    # TensorOps expects (in, out) weights for x @ W.
+    weights_in_out = [list(col) for col in zip(*weights_out_in)]
+    layer.output_weights.values = weights_in_out
+    layer.output_bias.values = [
+        [rng.uniform(-1.0, 1.0) for _ in range(layer.num_output_tensors)]
+    ]
+
+
+def init_model_params(model, seed=42):
+    rng = random.Random(seed)
+    for layer in model.model_layers:
+        init_layer_params(layer, rng)
 
 
 class MNISTModel(SequentialModel):
@@ -93,12 +114,11 @@ class MNISTModel(SequentialModel):
         num_hidden_layers: int,
         num_hidden_nodes: int,
         loss_criterion,
-        seed: int | None = None,
         activation_function=LeakyReLU,
         *,
         batch_size: int = 1,
     ) -> None:
-        super().__init__(loss_criterion, seed, batch_size=batch_size)
+        super().__init__(loss_criterion, None, batch_size=batch_size)
         self.activation_function = activation_function
         self.num_hidden_layers = num_hidden_layers
         with self.context:
@@ -107,8 +127,8 @@ class MNISTModel(SequentialModel):
                 self.add_layer(
                     num_hidden_nodes, num_hidden_nodes, self.activation_function
                 )
-            # Final layer emits logits; softmax is handled inside CrossEntropyLoss.
-            self.add_layer(num_hidden_nodes, 10, None)
+            # Apply activation on the output layer to match the PyTorch example.
+            self.add_layer(num_hidden_nodes, 10, self.activation_function)
             # CrossEntropyLoss expects (logits, target).
             self.loss = self.loss_criterion(
                 self.model_output_layer.layer_output, self.targets
@@ -116,116 +136,129 @@ class MNISTModel(SequentialModel):
 
     def forward(self, model_inputs: Tensor) -> Tensor:  # type: ignore[override]
         with self.context:
-            # Input must be (batch_size, 784) for this model.
-            for layer in self.model_layers:
-                layer.forward(model_inputs)
-                model_inputs = layer.layer_output
-            return model_inputs
+            # Update only the input placeholder; the graph is already wired.
+            if self.model_input_layer is None or self.model_output_layer is None:
+                raise ValueError("Model layers are not initialised")
+            if isinstance(model_inputs, Tensor):
+                self.model_input_layer.layer_input_tensors.values = model_inputs.values
+            else:
+                self.model_input_layer.layer_input_tensors.values = model_inputs
+            return self.model_output_layer.layer_output
 
 
-with TensorContext(device=tensorops.device.TensorOpsDevice.APPLE) as tc:
+if __name__ == "__main__":
+    random.seed(42)
+    (train_images, train_labels), (test_images, test_labels) = load_mnist()
+
+    train_images = _normalise_images(train_images)
+    test_images = _normalise_images(test_images)
+
     X_train, y_train, X_test, y_test = (
-        Tensor(train_images, requires_grad=False),
-        Tensor(train_labels, requires_grad=False),
-        Tensor(test_images, requires_grad=False),
-        Tensor(test_labels, requires_grad=False),
+        train_images,
+        train_labels,
+        test_images,
+        test_labels,
     )
 
-    print(X_train.shape, y_train.shape, X_test.shape, y_test.shape)
-
-    # impl model
     BATCH_SIZE = 256
-    N_EPOCHS = 5
+    N_EPOCHS = 100
 
     model = MNISTModel(
         2,
         256,
         CrossEntropyLoss(),
-        seed=42,
         batch_size=BATCH_SIZE,
         activation_function=LeakyReLU,
     )
-    optim = AdamW(model.get_weights(), lr=2e-4)
-    # Enable gradient clipping to stabilise updates
-    optim.grad_clip_norm = 0.5
-    optim.grad_clip_value = 0.5
+    init_model_params(model, seed=42)
+
     model.train()
+    optim = AdamWDevice(model.get_weights(), lr=2e-4)
 
     # Helper to create fixed-size batches (graph uses a fixed batch_size)
-    def _one_hot(label: int, num_classes: int = 10) -> list[float]:
-        vec = [0.0] * num_classes
-        vec[int(label)] = 1.0
-        return vec
+    def _one_hot_labels(labels: list[int], num_classes: int = 10) -> list[list[float]]:
+        one_hot = [[0.0] * num_classes for _ in labels]
+        for i, lbl in enumerate(labels):
+            one_hot[i][int(lbl)] = 1.0
+        return one_hot
 
-    def _has_nonfinite_grad(params: list[Tensor]) -> bool:
-        import numpy as np
+    y_train_one_hot = _one_hot_labels(y_train)
+    y_test_one_hot = _one_hot_labels(y_test)
 
-        for p in params:
-            g = getattr(p, "grads", None)
-            if g is None:
-                continue
-            src = g.flat if getattr(g, "flat", None) is not None else g.values
-            if src is None:
-                continue
-            arr = np.array(src, dtype=float)
-            if not np.isfinite(arr).all():
-                return True
-        return False
-
-    def get_batches(images: Tensor, labels: Tensor, batch_size: int):
+    def get_batches(images, labels_one_hot, batch_size: int, *, shuffle=True):
         """Yield full (batch_size, 784) images and (batch_size, 10) one-hot labels."""
-        assert images.values is not None and labels.values is not None
-        n_samples = len(images.values)
+        n_samples = len(images)
         indices = list(range(n_samples))
-        random.shuffle(indices)
+        if shuffle:
+            random.shuffle(indices)
 
         # Drop the last partial batch to keep shapes constant.
         for start_idx in range(0, n_samples - batch_size + 1, batch_size):
             batch_indices = indices[start_idx : start_idx + batch_size]
-            batch_images = [images.values[i] for i in batch_indices]
-            batch_labels = [_one_hot(int(labels.values[i])) for i in batch_indices]
-            yield (
-                Tensor(batch_images, requires_grad=False),
-                Tensor(batch_labels, requires_grad=False),
+            batch_images = [images[i] for i in batch_indices]
+            batch_labels = [labels_one_hot[i] for i in batch_indices]
+            yield batch_images, batch_labels
+
+    def get_eval_batches(images, labels_one_hot, batch_size: int):
+        """Yield eval batches, padding the last batch to keep shapes constant."""
+        n_samples = len(images)
+
+        for start_idx in range(0, n_samples, batch_size):
+            batch_indices = list(
+                range(start_idx, min(start_idx + batch_size, n_samples))
             )
+            valid_count = len(batch_indices)
+            if valid_count < batch_size:
+                batch_indices.extend([batch_indices[-1]] * (batch_size - valid_count))
+
+            batch_images = [images[i] for i in batch_indices]
+            batch_labels = [labels_one_hot[i] for i in batch_indices]
+            yield batch_images, batch_labels, valid_count
+
+    # Reuse model input/target tensors to avoid per-batch Tensor allocations.
+    input_tensor = model.model_input_layer.layer_input_tensors
+    assert model.targets is not None
+    target_tensor = model.targets
 
     for epoch in range(N_EPOCHS):
         if epoch % 10 == 0:
             print(f"Epoch {epoch + 1}")
 
-        for id_batch, (X_batch, y_batch) in enumerate(get_batches(X_train, y_train, BATCH_SIZE)):
+        for id_batch, (batch_images, batch_labels) in enumerate(
+            get_batches(X_train, y_train_one_hot, BATCH_SIZE, shuffle=True)
+        ):
             model.zero_grad()
 
-            logits = model(X_batch, execute=False)
-            assert model.targets is not None
-            model.targets.values = y_batch.values
+            input_tensor.values = batch_images
+            target_tensor.values = batch_labels
 
             model.context.forward(recompute=True)
             loss = model.loss
-            model.backward()
-            optim.step()
+            model.backward(device_optim=optim)
 
-            if id_batch % 100 == 0:
+            if id_batch % 250 == 0:
                 loss_value = loss.item()
                 print(f"Loss: {loss_value:.4f}")
 
+    model.eval()
     correct = 0
     total = 0
     import numpy as np
-    
-    # Disable dropout/etc if eval existed, here just forward pass
-    for X_batch, y_batch in get_batches(X_test, y_test, BATCH_SIZE):
-        logits = model(X_batch, execute=False)
+
+    for batch_images, batch_labels, valid_count in get_eval_batches(
+        X_test, y_test_one_hot, BATCH_SIZE
+    ):
+        input_tensor.values = batch_images
         model.context.forward(recompute=True)
-        
-        vals = np.array(logits.flat)
-        vals = vals.reshape((BATCH_SIZE, 10))
-        predicted = np.argmax(vals, axis=1)
-        
-        y_vals = np.array(y_batch.flat).reshape((BATCH_SIZE, 10))
-        target = np.argmax(y_vals, axis=1)
-        
+        logits = model.model_output_layer.layer_output
+
+        vals = np.array(logits.flat).reshape((BATCH_SIZE, 10))
+        predicted = np.argmax(vals, axis=1)[:valid_count]
+
+        y_vals = np.array(batch_labels).reshape((BATCH_SIZE, 10))
+        target = np.argmax(y_vals, axis=1)[:valid_count]
+
         correct += np.sum(predicted == target)
-        total += len(target)
+        total += valid_count
 
     print(f"Test Accuracy: {correct / total:.4f}")
