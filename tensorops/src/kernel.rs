@@ -524,14 +524,16 @@ impl KernelTensorOps {
                     }
                 }
 
-                // Special handling for VecPow: pass base buffer length as scalar for broadcasting
+                // Special handling for VecPow: pass base and exp buffer length as scalar for broadcasting
                 if matches!(
                     self.kernel_type,
                     KernelType::Predefined(PredefinedKernel::VecPow)
                 ) && input_ocl_buffers.len() >= 2
                 {
                     let base_len = input_ocl_buffers[0].len();
+                    let exp_len = input_ocl_buffers[1].len();
                     scalar_inputs.push(base_len as f32);
+                    scalar_inputs.push(exp_len as f32);
                 }
 
                 work_size_override.unwrap_or(inferred)
@@ -639,14 +641,16 @@ impl KernelTensorOps {
                     scalar_inputs.push(buffer_inputs[1].len() as f32);
                 }
 
-                // Special handling for VecPow: pass base buffer length as scalar for broadcasting
+                // Special handling for VecPow: pass base and exp buffer length as scalar for broadcasting
                 if matches!(
                     self.kernel_type,
                     KernelType::Predefined(PredefinedKernel::VecPow)
                 ) && buffer_inputs.len() >= 2
                 {
                     let base_len = buffer_inputs[0].len();
+                    let exp_len = buffer_inputs[1].len();
                     scalar_inputs.push(base_len as f32);
+                    scalar_inputs.push(exp_len as f32);
                 }
 
                 inferred
@@ -677,23 +681,16 @@ impl KernelTensorOps {
                     | KernelType::Predefined(PredefinedKernel::VecMin)
             ) && i == 0;
 
-            // For VecPow, allow base (index 0) to have length 1 for broadcasting
-            let is_pow_base = matches!(
-                self.kernel_type,
-                KernelType::Predefined(PredefinedKernel::VecPow)
-            ) && i == 0
-                && vec_data.len() == 1;
-
             let is_elementwise_scalar = matches!(
                 self.kernel_type,
                 KernelType::Predefined(PredefinedKernel::VecAdd)
                     | KernelType::Predefined(PredefinedKernel::VecSub)
                     | KernelType::Predefined(PredefinedKernel::VecElementMul)
                     | KernelType::Predefined(PredefinedKernel::VecDiv)
+                    | KernelType::Predefined(PredefinedKernel::VecPow)
             ) && vec_data.len() == 1;
 
             if !is_reduce_input
-                && !is_pow_base
                 && !is_elementwise_scalar
                 && vec_data.len() != work_size_dims
             {

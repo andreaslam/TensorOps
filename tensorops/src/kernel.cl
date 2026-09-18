@@ -114,16 +114,19 @@ __kernel void VecDiv(__global const float* A,
 __kernel void VecPow(__global const float* base,
                      __global const float* exponent,
                      __global float* C,
-                     float base_len_f)
+                     float base_len_f,
+                     float exp_len_f)
 {
     int gid = get_global_id(0);
     int base_len = (int)base_len_f;
+    int exp_len = (int)exp_len_f;
     
-    // Broadcast if base has only one element
+    // Broadcast if base or exponent has only one element
     int base_idx = (base_len == 1) ? 0 : gid;
+    int exp_idx = (exp_len == 1) ? 0 : gid;
     
-    // Calculate base[base_idx] raised to the power of exponent[gid]
-    C[gid] = pow(base[base_idx], exponent[gid]);
+    // Calculate base[base_idx] raised to the power of exponent[exp_idx]
+    C[gid] = pow(base[base_idx], exponent[exp_idx]);
 }
 
 /*
